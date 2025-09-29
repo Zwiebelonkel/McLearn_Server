@@ -10,18 +10,15 @@ import { verifyToken, requireAuth } from "./auth.js";
 const app = express();
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret';
 
-// CORS für alle Origins erlauben
-app.use(
-  cors({
-    origin: "*",
-    methods: ["GET", "POST", "PATCH", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-API-Key"],
-  })
-);
+app.use(cors({
+  origin: "*",
+  methods: ["GET", "POST", "PATCH", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-API-Key"],
+}));
 
 app.use(express.json());
 
-/* ------------------ LOGIN / REGISTER ------------------ */
+/* ========== AUTH ========== */
 app.post("/api/login", async (req, res) => {
   const { username, password } = req.body;
   try {
@@ -65,89 +62,68 @@ app.post("/api/register", async (req, res) => {
   }
 });
 
-/* ------------------ HEALTH ------------------ */
+/* ========== HEALTH ========== */
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
-/* ------------------ STACKS ------------------ */
+/* ========== STACKS ========== */
 
-// Alle öffentlichen Stacks
-app.get("/api/stacks/public", async (_req, res) => {
-  const { rows } = await db.execute(
-    `SELECT * FROM stacks WHERE is_public = true ORDER BY created_at DESC`
-  );
-  res.json(rows);
-});
-
-// Nur eigene Stacks
-app.get("/api/stacks/mine", requireAuth, async (req, res) => {
+// Alle eigenen + öffentlichen Stacks
+app.get("/api/stacks", requireAuth, async (req, res) => {
   const userId = req.user.id;
   const { rows } = await db.execute(
-    `SELECT * FROM stacks WHERE user_id=? ORDER BY created_at DESC`,
+    `SELECT * FROM stacks 
+     WHERE is_public = 1 OR user_id = ? 
+     ORDER BY created_at DESC`,
     [userId]
   );
   res.json(rows);
-});
-
-// Kombiniert: eigene + öffentliche
-app.post("/api/stacks", async (req, res) => {
-  const { name, public: is_public } = req.body || {};
-  if (!name?.trim()) return res.status(400).json({ error: "name required" });
-  const id = nanoid();
-  const now = new Date().toISOString();
-  await db.execute({
-    sql: `INSERT INTO stacks(id,name,public,created_at,updated_at) VALUES(?,?,?,?,?)`,
-    args: [id, name.trim(), is_public ? 1 : 0, now, now],
-  });
-  const { rows } = await db.execute({
-    sql: `SELECT * FROM stacks WHERE id=?`,
-    args: [id],
-  });
-  res.status(201).json(rows[0]);
 });
 
 // Stack erstellen
 app.post("/api/stacks", requireAuth, async (req, res) => {
   const { name, is_public } = req.body || {};
   if (!name?.trim()) return res.status(400).json({ error: "name required" });
+
   const id = nanoid();
   const now = new Date().toISOString();
+
   await db.execute({
-    sql: `INSERT INTO stacks(id,user_id,name,is_public,created_at,updated_at) VALUES(?,?,?,?,?,?)`,
-    args: [id, req.user.id, name.trim(), !!is_public, now, now],
+    sql: `INSERT INTO stacks(id,user_id,name,is_public,created_at,updated_at)
+          VALUES(?,?,?,?,?,?)`,
+    args: [id, req.user.id, name.trim(), is_public ? 1 : 0, now, now],
   });
-  const { rows } = await db.execute({
-    sql: `SELECT * FROM stacks WHERE id=?`,
-    args: [id],
-  });
+
+  const { rows } = await db.execute("SELECT * FROM stacks WHERE id=?", [id]);
   res.status(201).json(rows[0]);
 });
 
-// Neue kombinierte Route: Eigene + Öffentliche Stacks
-app.get("/api/stacks", requireAuth, async (req, res) => {
-  const userId = req.user.id;
-  const { rows } = await db.execute(
-    `SELECT * FROM stacks WHERE is_public = 1 OR user_id = ? ORDER BY created_at DESC`,
-    [userId]
-  );
-  res.json(rows);
+// Einzelnen Stack holen
+app.get("/api/stacks/:id", requireAuth, async (req, res) => {
+  const { id } = req.params;
+  const { rows } = await db.execute("SELECT * FROM stacks WHERE id=?", [id]);
+  const stack = rows[0];
+  if (!stack) return res.status(404).json({ error: "not found" });
+
+  if (!stack.is_public && stack.user_id !== req.user.id)
+    return res.status(403).json({ error: "Forbidden" });
+
+  res.json(stack);
 });
 
-
-// Stack updaten
-// PATCH /api/stacks/:id
-app.patch("/api/stacks/:id", async (req, res) => {
-  const { name, public: is_public } = req.body || {};
+// Stack bearbeiten
+app.patch("/api/stacks/:id", requireAuth, async (req, res) => {
   const { id } = req.params;
+  const { name, is_public } = req.body || {};
   if (!name?.trim()) return res.status(400).json({ error: "name required" });
+
   const now = new Date().toISOString();
   await db.execute({
-    sql: `UPDATE stacks SET name=?, public=?, updated_at=? WHERE id=?`,
-    args: [name.trim(), is_public ? 1 : 0, now, id],
+    sql: `UPDATE stacks SET name=?, is_public=?, updated_at=? 
+          WHERE id=? AND user_id=?`,
+    args: [name.trim(), is_public ? 1 : 0, now, id, req.user.id],
   });
-  const { rows } = await db.execute({
-    sql: `SELECT * FROM stacks WHERE id=?`,
-    args: [id],
-  });
+
+  const { rows } = await db.execute("SELECT * FROM stacks WHERE id=?", [id]);
   if (!rows.length) return res.status(404).json({ error: "not found" });
   res.json(rows[0]);
 });
@@ -162,12 +138,13 @@ app.delete("/api/stacks/:id", requireAuth, async (req, res) => {
   res.status(204).end();
 });
 
-/* ------------------ CARDS ------------------ */
+/* ========== CARDS ========== */
+
+// Karten eines Stacks holen
 app.get("/api/cards", requireAuth, async (req, res) => {
   const { stackId } = req.query;
   if (!stackId) return res.status(400).json({ error: "stackId required" });
 
-  // check stack visibility
   const { rows: stacks } = await db.execute(
     "SELECT * FROM stacks WHERE id=?",
     [stackId]
@@ -175,7 +152,6 @@ app.get("/api/cards", requireAuth, async (req, res) => {
   const stack = stacks[0];
   if (!stack) return res.status(404).json({ error: "stack not found" });
 
-  // only owner can see private stacks
   if (!stack.is_public && stack.user_id !== req.user.id)
     return res.status(403).json({ error: "Forbidden" });
 
@@ -186,11 +162,13 @@ app.get("/api/cards", requireAuth, async (req, res) => {
   res.json(rows);
 });
 
+// Karte erstellen
 app.post("/api/cards", requireAuth, async (req, res) => {
   const { stack_id, front, back } = req.body || {};
   if (!stack_id || !front?.trim() || !back?.trim()) {
     return res.status(400).json({ error: "stack_id, front, back required" });
   }
+
   const id = nanoid();
   const now = new Date().toISOString();
   await db.execute({
@@ -198,16 +176,14 @@ app.post("/api/cards", requireAuth, async (req, res) => {
      VALUES(?,?,?,?,1,?,?,?)`,
     args: [id, stack_id, front.trim(), back.trim(), now, now, now],
   });
-  const { rows } = await db.execute({
-    sql: `SELECT * FROM cards WHERE id=?`,
-    args: [id],
-  });
+
+  const { rows } = await db.execute("SELECT * FROM cards WHERE id=?", [id]);
   res.status(201).json(rows[0]);
 });
 
-/* … der Rest (PATCH/DELETE Cards, Study Mode) bleibt gleich … */
+/* TODO: PATCH / DELETE / STUDY */
 
 const port = process.env.PORT || 8080;
 app.listen(port, () => {
-  console.log(`API on :${port}`);
+  console.log(`✅ API läuft auf http://localhost:${port}`);
 });
