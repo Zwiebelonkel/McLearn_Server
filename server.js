@@ -9,7 +9,9 @@ import { verifyToken, requireAuth, requireAdmin } from "./auth.js";
 
 const app = express();
 
-app.use(cors());
+const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret';
+
+
 app.use(express.json());
 app.use(
   cors({
