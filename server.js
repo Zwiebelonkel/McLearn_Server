@@ -4,6 +4,7 @@ import cors from "cors";
 import { nanoid } from "nanoid";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import db from './db.js';
 import { verifyToken, requireAuth, requireAdmin } from "./auth.js";
 
 const app = express();
