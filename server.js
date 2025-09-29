@@ -9,12 +9,14 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+/*
 // simple API-key auth (ein User)
 app.use((req, res, next) => {
   const key = req.header("X-API-Key");
   if (!process.env.API_KEY || key === process.env.API_KEY) return next();
   return res.status(401).json({ error: "Unauthorized" });
 });
+*/
 
 // health
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
