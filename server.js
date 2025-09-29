@@ -1,9 +1,4 @@
 import "dotenv/config";
-console.log("--- Debugging Environment Variables ---");
-console.log("TURSO_URL:", process.env.TURSO_URL);
-console.log("TURSO_AUTH_TOKEN loaded (length):", process.env.TURSO_AUTH_TOKEN?.length);
-console.log("API_KEY loaded (length):", process.env.API_KEY?.length);
-console.log("------------------------------------");
 import express from "express";
 import cors from "cors";
 import { nanoid } from "nanoid";
