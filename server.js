@@ -122,6 +122,17 @@ app.post("/api/stacks", requireAuth, async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
+// Neue kombinierte Route: Eigene + Öffentliche Stacks
+app.get("/api/stacks", requireAuth, async (req, res) => {
+  const userId = req.user.id;
+  const { rows } = await db.execute(
+    `SELECT * FROM stacks WHERE is_public = 1 OR user_id = ? ORDER BY created_at DESC`,
+    [userId]
+  );
+  res.json(rows);
+});
+
+
 // Stack updaten
 // PATCH /api/stacks/:id
 app.patch("/api/stacks/:id", async (req, res) => {
