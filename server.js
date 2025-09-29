@@ -90,13 +90,13 @@ app.get("/api/stacks/mine", requireAuth, async (req, res) => {
 
 // Kombiniert: eigene + öffentliche
 app.post("/api/stacks", async (req, res) => {
-  const { name, public: isPublic } = req.body || {};
+  const { name, public: is_public } = req.body || {};
   if (!name?.trim()) return res.status(400).json({ error: "name required" });
   const id = nanoid();
   const now = new Date().toISOString();
   await db.execute({
     sql: `INSERT INTO stacks(id,name,public,created_at,updated_at) VALUES(?,?,?,?,?)`,
-    args: [id, name.trim(), isPublic ? 1 : 0, now, now],
+    args: [id, name.trim(), is_public ? 1 : 0, now, now],
   });
   const { rows } = await db.execute({
     sql: `SELECT * FROM stacks WHERE id=?`,
@@ -136,13 +136,13 @@ app.get("/api/stacks", requireAuth, async (req, res) => {
 // Stack updaten
 // PATCH /api/stacks/:id
 app.patch("/api/stacks/:id", async (req, res) => {
-  const { name, public: isPublic } = req.body || {};
+  const { name, public: is_public } = req.body || {};
   const { id } = req.params;
   if (!name?.trim()) return res.status(400).json({ error: "name required" });
   const now = new Date().toISOString();
   await db.execute({
     sql: `UPDATE stacks SET name=?, public=?, updated_at=? WHERE id=?`,
-    args: [name.trim(), isPublic ? 1 : 0, now, id],
+    args: [name.trim(), is_public ? 1 : 0, now, id],
   });
   const { rows } = await db.execute({
     sql: `SELECT * FROM stacks WHERE id=?`,
