@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: flashcards-backend
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        fromSecret: true
+      - key: DATABASE_AUTH_TOKEN
+        fromSecret: true
+      - key: CORS_ORIGIN
+        fromSecret: true
+      - key: API_KEY
+        fromSecret: true
