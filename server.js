@@ -6,13 +6,7 @@ import { all, one, run } from "./db.js";
 
 const app = express();
 app.use(express.json());
-app.use(
-  cors({
-    origin: process.env.CORS_ORIGIN?.split(",").map((s) => s.trim()),
-    methods: ["GET", "POST", "PATCH", "DELETE"],
-    allowedHeaders: ["Content-Type", "X-API-Key"],
-  })
-);
+app.use(cors());
 
 // simple API-key auth (ein User)
 app.use((req, res, next) => {
