@@ -2,7 +2,6 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { nanoid } from "nanoid";
-import { all, one, run } from "./db.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { verifyToken, requireAuth, requireAdmin } from "./auth.js";
