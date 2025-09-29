@@ -3,6 +3,9 @@ import express from "express";
 import cors from "cors";
 import { nanoid } from "nanoid";
 import { all, one, run } from "./db.js";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import { verifyToken, requireAuth, requireAdmin } from "./auth.js";
 
 const app = express();
 app.use(express.json());
@@ -13,6 +16,108 @@ app.use(
     allowedHeaders: ["Content-Type", "X-API-Key"],
   })
 );
+
+// Login
+app.post("/api/login", async (req, res) => {
+  const { username, password } = req.body;
+  try {
+    const result = await db.execute({
+      sql: "SELECT * FROM users WHERE username = ?",
+      args: [username],
+    });
+
+    if (result.rows.length === 0) {
+      return res.status(401).json({ message: "Benutzer nicht gefunden" });
+    }
+
+    const user = result.rows[0];
+    const valid = await bcrypt.compare(password, user.password);
+    if (!valid) return res.status(401).json({ message: "Falsches Passwort" });
+
+    const token = jwt.sign(
+      { id: user.id, username: user.username, role: user.role },
+      JWT_SECRET,
+      { expiresIn: "8h" }
+    );
+
+    res.json({ success: true, token });
+  } catch (err) {
+    res.status(500).json({ message: "Login-Fehler" });
+  }
+});
+
+// Passwort ändern (SECURED)
+app.patch("/api/users/password", requireAuth, async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+  const userId = req.user.id; // USE ID FROM TOKEN
+
+  try {
+    const result = await db.execute({
+      sql: "SELECT * FROM users WHERE id = ?",
+      args: [userId],
+    });
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "Benutzer nicht gefunden" });
+    }
+
+    const user = result.rows[0];
+    const isMatch = await bcrypt.compare(currentPassword, user.password);
+    if (!isMatch) {
+      return res.status(401).json({ message: "Falsches aktuelles Passwort" });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await db.execute({
+      sql: "UPDATE users SET password = ? WHERE id = ?",
+      args: [hashedPassword, userId],
+    });
+
+    res.json({ message: "Passwort erfolgreich geändert" });
+  } catch (err) {
+    res.status(500).json({ message: "Fehler beim Ändern des Passworts" });
+  }
+});
+
+app.post("/api/register", async (req, res) => {
+  const { username, password } = req.body;
+
+  try {
+    const hash = await bcrypt.hash(password, 10);
+
+    // 1. Nutzer anlegen
+    const result = await db.execute({
+      sql: "INSERT INTO users (username, password) VALUES (?, ?)",
+      args: [username, hash],
+    });
+
+    const userId = result.lastInsertRowid;
+
+    // 2. Dorf anlegen
+    const villageResult = await db.execute({
+      sql: "INSERT INTO village (user_id) VALUES (?)",
+      args: [userId],
+    });
+
+    const villageId = villageResult.lastInsertRowid;
+
+    // 3. 4 Bewohner anlegen
+    for (let i = 1; i <= 2; i++) {
+      await db.execute({
+        sql: "INSERT INTO villagers (village_id, name, level, income) VALUES (?, ?, ?, ?)",
+        args: [villageId, `Bewohner ${i}`, 1, 0.5],
+      });
+    }
+
+    res.status(201).json({ message: "Registrierung & Dorf erfolgreich" });
+  } catch (err) {
+    if (err.message.includes("UNIQUE")) {
+      return res.status(409).json({ message: "Benutzername bereits vergeben" });
+    }
+    console.error("❌ Fehler bei Registrierung:", err);
+    res.status(500).json({ message: "Fehler beim Registrieren" });
+  }
+});
 
 // simple API-key auth (ein User)
 app.use((req, res, next) => {
