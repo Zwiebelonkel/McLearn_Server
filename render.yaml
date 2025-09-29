@@ -7,9 +7,9 @@ services:
     startCommand: node server.js
     healthCheckPath: /api/health
     envVars:
-      - key: DATABASE_URL
+      - key: TURSO_URL
         fromSecret: true
-      - key: DATABASE_AUTH_TOKEN
+      - key: TURSO_TOKEN
         fromSecret: true
       - key: CORS_ORIGIN
         fromSecret: true
