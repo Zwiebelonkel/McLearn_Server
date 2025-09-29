@@ -89,15 +89,20 @@ app.get("/api/stacks/mine", requireAuth, async (req, res) => {
 });
 
 // Kombiniert: eigene + öffentliche
-app.get("/api/stacks", requireAuth, async (req, res) => {
-  const userId = req.user.id;
-  const { rows } = await db.execute(
-    `SELECT * FROM stacks 
-     WHERE is_public = true OR user_id=? 
-     ORDER BY created_at DESC`,
-    [userId]
-  );
-  res.json(rows);
+app.post("/api/stacks", async (req, res) => {
+  const { name, public: isPublic } = req.body || {};
+  if (!name?.trim()) return res.status(400).json({ error: "name required" });
+  const id = nanoid();
+  const now = new Date().toISOString();
+  await db.execute({
+    sql: `INSERT INTO stacks(id,name,public,created_at,updated_at) VALUES(?,?,?,?,?)`,
+    args: [id, name.trim(), isPublic ? 1 : 0, now, now],
+  });
+  const { rows } = await db.execute({
+    sql: `SELECT * FROM stacks WHERE id=?`,
+    args: [id],
+  });
+  res.status(201).json(rows[0]);
 });
 
 // Stack erstellen
@@ -118,14 +123,15 @@ app.post("/api/stacks", requireAuth, async (req, res) => {
 });
 
 // Stack updaten
-app.patch("/api/stacks/:id", requireAuth, async (req, res) => {
-  const { name, is_public } = req.body || {};
+// PATCH /api/stacks/:id
+app.patch("/api/stacks/:id", async (req, res) => {
+  const { name, public: isPublic } = req.body || {};
   const { id } = req.params;
+  if (!name?.trim()) return res.status(400).json({ error: "name required" });
   const now = new Date().toISOString();
-
   await db.execute({
-    sql: `UPDATE stacks SET name=?, is_public=?, updated_at=? WHERE id=? AND user_id=?`,
-    args: [name, !!is_public, now, id, req.user.id],
+    sql: `UPDATE stacks SET name=?, public=?, updated_at=? WHERE id=?`,
+    args: [name.trim(), isPublic ? 1 : 0, now, id],
   });
   const { rows } = await db.execute({
     sql: `SELECT * FROM stacks WHERE id=?`,
