@@ -1,12 +1,14 @@
+
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { nanoid } from "nanoid";
-import { all, one, run } from "./db.js";
+import { run, all, one } from "./db.js";
 
 const app = express();
-app.use(express.json());
+
 app.use(cors());
+app.use(express.json());
 
 // simple API-key auth (ein User)
 app.use((req, res, next) => {
