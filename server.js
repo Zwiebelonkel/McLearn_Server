@@ -93,25 +93,7 @@ app.post("/api/register", async (req, res) => {
       args: [username, hash],
     });
 
-    const userId = result.lastInsertRowid;
-
-    // 2. Dorf anlegen
-    const villageResult = await db.execute({
-      sql: "INSERT INTO village (user_id) VALUES (?)",
-      args: [userId],
-    });
-
-    const villageId = villageResult.lastInsertRowid;
-
-    // 3. 4 Bewohner anlegen
-    for (let i = 1; i <= 2; i++) {
-      await db.execute({
-        sql: "INSERT INTO villagers (village_id, name, level, income) VALUES (?, ?, ?, ?)",
-        args: [villageId, `Bewohner ${i}`, 1, 0.5],
-      });
-    }
-
-    res.status(201).json({ message: "Registrierung & Dorf erfolgreich" });
+    res.status(201).json({ message: "Registrierung erfolgreich" });
   } catch (err) {
     if (err.message.includes("UNIQUE")) {
       return res.status(409).json({ message: "Benutzername bereits vergeben" });
