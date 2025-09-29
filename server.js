@@ -8,6 +8,8 @@ import jwt from "jsonwebtoken";
 import { verifyToken, requireAuth, requireAdmin } from "./auth.js";
 
 const app = express();
+
+app.use(cors());
 app.use(express.json());
 app.use(
   cors({
@@ -131,7 +133,9 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
 /** -------- Stacks -------- */
 app.get("/api/stacks", async (_req, res) => {
-  const rows = await all(`SELECT * FROM stacks ORDER BY created_at DESC`);
+  const { rows } = await db.execute(
+    `SELECT * FROM stacks ORDER BY created_at DESC`
+  );
   res.json(rows);
 });
 
@@ -140,11 +144,15 @@ app.post("/api/stacks", async (req, res) => {
   if (!name?.trim()) return res.status(400).json({ error: "name required" });
   const id = nanoid();
   const now = new Date().toISOString();
-  await run(
-    `INSERT INTO stacks(id,name,created_at,updated_at) VALUES(?,?,?,?)`,
-    [id, name.trim(), now, now]
-  );
-  res.status(201).json(await one(`SELECT * FROM stacks WHERE id=?`, [id]));
+  await db.execute({
+    sql: `INSERT INTO stacks(id,name,created_at,updated_at) VALUES(?,?,?,?)`,
+    args: [id, name.trim(), now, now],
+  });
+  const { rows } = await db.execute({
+    sql: `SELECT * FROM stacks WHERE id=?`,
+    args: [id],
+  });
+  res.status(201).json(rows[0]);
 });
 
 app.patch("/api/stacks/:id", async (req, res) => {
@@ -152,19 +160,21 @@ app.patch("/api/stacks/:id", async (req, res) => {
   const { id } = req.params;
   if (!name?.trim()) return res.status(400).json({ error: "name required" });
   const now = new Date().toISOString();
-  await run(`UPDATE stacks SET name=?, updated_at=? WHERE id=?`, [
-    name.trim(),
-    now,
-    id,
-  ]);
-  const row = await one(`SELECT * FROM stacks WHERE id=?`, [id]);
-  if (!row) return res.status(404).json({ error: "not found" });
-  res.json(row);
+  await db.execute({
+    sql: `UPDATE stacks SET name=?, updated_at=? WHERE id=?`,
+    args: [name.trim(), now, id],
+  });
+  const { rows } = await db.execute({
+    sql: `SELECT * FROM stacks WHERE id=?`,
+    args: [id],
+  });
+  if (!rows.length) return res.status(404).json({ error: "not found" });
+  res.json(rows[0]);
 });
 
 app.delete("/api/stacks/:id", async (req, res) => {
   const { id } = req.params;
-  await run(`DELETE FROM stacks WHERE id=?`, [id]);
+  await db.execute({ sql: `DELETE FROM stacks WHERE id=?`, args: [id] });
   res.status(204).end();
 });
 
@@ -172,10 +182,10 @@ app.delete("/api/stacks/:id", async (req, res) => {
 app.get("/api/cards", async (req, res) => {
   const { stackId } = req.query;
   if (!stackId) return res.status(400).json({ error: "stackId required" });
-  const rows = await all(
-    `SELECT * FROM cards WHERE stack_id=? ORDER BY created_at DESC`,
-    [stackId]
-  );
+  const { rows } = await db.execute({
+    sql: `SELECT * FROM cards WHERE stack_id=? ORDER BY created_at DESC`,
+    args: [stackId],
+  });
   res.json(rows);
 });
 
@@ -186,36 +196,48 @@ app.post("/api/cards", async (req, res) => {
   }
   const id = nanoid();
   const now = new Date().toISOString();
-  await run(
-    `INSERT INTO cards(id,stack_id,front,back,box,due_at,created_at,updated_at)
+  await db.execute({
+    sql: `INSERT INTO cards(id,stack_id,front,back,box,due_at,created_at,updated_at)
      VALUES(?,?,?,?,1,?,?,?)`,
-    [id, stack_id, front.trim(), back.trim(), now, now, now]
-  );
-  res.status(201).json(await one(`SELECT * FROM cards WHERE id=?`, [id]));
+    args: [id, stack_id, front.trim(), back.trim(), now, now, now],
+  });
+  const { rows } = await db.execute({
+    sql: `SELECT * FROM cards WHERE id=?`,
+    args: [id],
+  });
+  res.status(201).json(rows[0]);
 });
 
 app.patch("/api/cards/:id", async (req, res) => {
   const { id } = req.params;
   const { front, back, stack_id } = req.body || {};
   const now = new Date().toISOString();
-  const card = await one(`SELECT * FROM cards WHERE id=?`, [id]);
+  const { rows: cardRows } = await db.execute({
+    sql: `SELECT * FROM cards WHERE id=?`,
+    args: [id],
+  });
+  const card = cardRows[0];
   if (!card) return res.status(404).json({ error: "not found" });
-  await run(
-    `UPDATE cards SET front=?, back=?, stack_id=?, updated_at=? WHERE id=?`,
-    [
+  await db.execute({
+    sql: `UPDATE cards SET front=?, back=?, stack_id=?, updated_at=? WHERE id=?`,
+    args: [
       front?.trim() ?? card.front,
       back?.trim() ?? card.back,
       stack_id ?? card.stack_id,
       now,
       id,
-    ]
-  );
-  res.json(await one(`SELECT * FROM cards WHERE id=?`, [id]));
+    ],
+  });
+  const { rows } = await db.execute({
+    sql: `SELECT * FROM cards WHERE id=?`,
+    args: [id],
+  });
+  res.json(rows[0]);
 });
 
 app.delete("/api/cards/:id", async (req, res) => {
   const { id } = req.params;
-  await run(`DELETE FROM cards WHERE id=?`, [id]);
+  await db.execute({ sql: `DELETE FROM cards WHERE id=?`, args: [id] });
   res.status(204).end();
 });
 
@@ -234,22 +256,28 @@ app.get("/api/study/next", async (req, res) => {
   if (!stackId) return res.status(400).json({ error: "stackId required" });
   const now = new Date().toISOString();
   // Nächste fällige Karte; wenn keine fällig → irgendeine Karte (zum Start)
-  let card = await one(
-    `SELECT * FROM cards WHERE stack_id=? AND due_at<=? ORDER BY due_at ASC LIMIT 1`,
-    [stackId, now]
-  );
+  const { rows: dueRows } = await db.execute({
+    sql: `SELECT * FROM cards WHERE stack_id=? AND due_at<=? ORDER BY due_at ASC LIMIT 1`,
+    args: [stackId, now],
+  });
+  let card = dueRows[0];
   if (!card) {
-    card = await one(
-      `SELECT * FROM cards WHERE stack_id=? ORDER BY RANDOM() LIMIT 1`,
-      [stackId]
-    );
+    const { rows: randomRows } = await db.execute({
+      sql: `SELECT * FROM cards WHERE stack_id=? ORDER BY RANDOM() LIMIT 1`,
+      args: [stackId],
+    });
+    card = randomRows[0];
   }
   res.json(card || null);
 });
 
 app.post("/api/study/review", async (req, res) => {
   const { cardId, rating } = req.body || {}; // 'again' | 'hard' | 'good' | 'easy'
-  const card = await one(`SELECT * FROM cards WHERE id=?`, [cardId]);
+  const { rows } = await db.execute({
+    sql: `SELECT * FROM cards WHERE id=?`,
+    args: [cardId],
+  });
+  const card = rows[0];
   if (!card) return res.status(404).json({ error: "card not found" });
 
   let nextBox = card.box;
@@ -280,14 +308,16 @@ app.post("/api/study/review", async (req, res) => {
 
   const iso = nextDue.toISOString();
   const now = new Date().toISOString();
-  await run(`UPDATE cards SET box=?, due_at=?, updated_at=? WHERE id=?`, [
-    nextBox,
-    iso,
-    now,
-    cardId,
-  ]);
+  await db.execute({
+    sql: `UPDATE cards SET box=?, due_at=?, updated_at=? WHERE id=?`,
+    args: [nextBox, iso, now, cardId],
+  });
 
-  res.json(await one(`SELECT * FROM cards WHERE id=?`, [cardId]));
+  const { rows: updatedRows } = await db.execute({
+    sql: `SELECT * FROM cards WHERE id=?`,
+    args: [cardId],
+  });
+  res.json(updatedRows[0]);
 });
 
 const port = process.env.PORT || 8080;
