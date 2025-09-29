@@ -5,4 +5,6 @@ const db = createClient({
   authToken: process.env.TURSO_AUTH_TOKEN,
 });
 
+await db.sync();
+
 export default db;
