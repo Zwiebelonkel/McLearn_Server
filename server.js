@@ -1,9 +1,8 @@
-
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { nanoid } from "nanoid";
-import { run, all, one } from "./db.js";
+import db from "./db.js";
 
 const app = express();
 
