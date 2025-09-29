@@ -11,15 +11,15 @@ const app = express();
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret';
 
+// CORS zuerst konfigurieren
+app.use(cors({
+  origin: process.env.CORS_ORIGIN?.split(",").map((s) => s.trim()) || "*",
+  methods: ["GET", "POST", "PATCH", "DELETE"],
+  allowedHeaders: ["Content-Type", "X-API-Key", "Authorization"],
+  credentials: true
+}));
 
 app.use(express.json());
-app.use(
-  cors({
-    origin: process.env.CORS_ORIGIN?.split(",").map((s) => s.trim()),
-    methods: ["GET", "POST", "PATCH", "DELETE"],
-    allowedHeaders: ["Content-Type", "X-API-Key"],
-  })
-);
 
 // Login
 app.post("/api/login", async (req, res) => {
