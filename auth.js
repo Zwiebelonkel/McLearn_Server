@@ -17,6 +17,20 @@ export function verifyToken(req, res, next) {
   }
 }
 
+export function optionalAuth(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    const token = authHeader.split(" ")[1];
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      req.user = decoded;
+    } catch (err) {
+      // Ungültiger Token wird ignoriert
+    }
+  }
+  next();
+}
+
 export function requireAuth(req, res, next) {
   return verifyToken(req, res, next);
 }

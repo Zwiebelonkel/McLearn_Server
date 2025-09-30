@@ -5,7 +5,7 @@ import { nanoid } from "nanoid";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import db from './db.js';
-import { requireAuth } from "./auth.js";
+import { requireAuth, optionalAuth } from "./auth.js";
 
 const app = express();
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret';
@@ -67,20 +67,26 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
 /* ========== STACKS ========== */
 
-// Alle eigenen + öffentlichen Stacks
-app.get("/api/stacks", requireAuth, async (req, res) => {
-  const userId = req.user.id;
-  const { rows } = await db.execute({
-    sql: `
-      SELECT s.id, s.name, s.is_public, s.created_at, s.updated_at, s.user_id, u.username as owner_name
-      FROM stacks s
-      JOIN users u ON s.user_id = u.id
-      WHERE s.is_public = 1 OR s.user_id = ?
-      ORDER BY s.created_at DESC
-    `,
-    args: [userId],
-  });
+// Alle öffentlichen Stacks, plus eigene für eingeloggte Nutzer
+app.get("/api/stacks", optionalAuth, async (req, res) => {
+  const userId = req.user?.id;
+  let sql = `
+    SELECT s.id, s.name, s.is_public, s.created_at, s.updated_at, s.user_id, u.username as owner_name
+    FROM stacks s
+    JOIN users u ON s.user_id = u.id
+  `;
+  const args = [];
 
+  if (userId) {
+    sql += " WHERE s.is_public = 1 OR s.user_id = ?";
+    args.push(userId);
+  } else {
+    sql += " WHERE s.is_public = 1";
+  }
+
+  sql += " ORDER BY s.created_at DESC";
+
+  const { rows } = await db.execute({ sql, args });
   res.json(rows);
 });
 
@@ -104,14 +110,15 @@ app.post("/api/stacks", requireAuth, async (req, res) => {
 });
 
 // Einzelnen Stack holen
-app.get("/api/stacks/:id", requireAuth, async (req, res) => {
+app.get("/api/stacks/:id", optionalAuth, async (req, res) => {
   const { id } = req.params;
   const { rows } = await db.execute("SELECT s.*, u.username as owner_name FROM stacks s JOIN users u ON s.user_id = u.id WHERE s.id=?", [id]);
   const stack = rows[0];
   if (!stack) return res.status(404).json({ error: "not found" });
 
-  if (!stack.is_public && stack.user_id !== req.user.id)
+  if (!stack.is_public && (!req.user || stack.user_id !== req.user.id)) {
     return res.status(403).json({ error: "Forbidden" });
+  }
 
   res.json(stack);
 });
@@ -147,7 +154,7 @@ app.delete("/api/stacks/:id", requireAuth, async (req, res) => {
 /* ========== CARDS ========== */
 
 // Karten eines Stacks holen
-app.get("/api/cards", requireAuth, async (req, res) => {
+app.get("/api/cards", optionalAuth, async (req, res) => {
   const { stackId } = req.query;
   if (!stackId) return res.status(400).json({ error: "stackId required" });
 
@@ -158,8 +165,9 @@ app.get("/api/cards", requireAuth, async (req, res) => {
   const stack = stacks[0];
   if (!stack) return res.status(404).json({ error: "stack not found" });
 
-  if (!stack.is_public && stack.user_id !== req.user.id)
+  if (!stack.is_public && (!req.user || stack.user_id !== req.user.id)) {
     return res.status(403).json({ error: "Forbidden" });
+  }
 
   const { rows } = await db.execute({
     sql: `SELECT * FROM cards WHERE stack_id=? ORDER BY created_at DESC`,
