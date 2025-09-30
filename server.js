@@ -213,6 +213,7 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
     return res.status(403).json({ error: "Forbidden" });
   }
   
+  res.setHeader('Cache-Control', 'no-store');
   const now = new Date().toISOString();
   // Nächste fällige Karte; wenn keine fällig → irgendeine Karte (zum Start)
   const { rows: dueRows } = await db.execute({
