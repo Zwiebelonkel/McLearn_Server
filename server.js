@@ -5,7 +5,7 @@ import { nanoid } from "nanoid";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import db from './db.js';
-import { verifyToken, requireAuth } from "./auth.js";
+import { requireAuth } from "./auth.js";
 
 const app = express();
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret';
@@ -181,7 +181,77 @@ app.post("/api/cards", requireAuth, async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
-/* TODO: PATCH / DELETE / STUDY */
+const boxIntervals = [0, 1, 3, 7, 16, 35]; // Index = Box, in Tagen
+
+app.get("/api/stacks/:stackId/study/next", requireAuth, async (req, res) => {
+  const { stackId } = req.params;
+  const now = new Date().toISOString();
+  // Nächste fällige Karte; wenn keine fällig → irgendeine Karte (zum Start)
+  const { rows: dueRows } = await db.execute({
+    sql: `SELECT * FROM cards WHERE stack_id=? AND due_at<=? ORDER BY due_at ASC LIMIT 1`,
+    args: [stackId, now],
+  });
+  let card = dueRows[0];
+  if (!card) {
+    const { rows: randomRows } = await db.execute({
+      sql: `SELECT * FROM cards WHERE stack_id=? ORDER BY RANDOM() LIMIT 1`,
+      args: [stackId],
+    });
+    card = randomRows[0];
+  }
+  res.json(card || null);
+});
+
+app.post("/api/study/review", requireAuth, async (req, res) => {
+  const { cardId, rating } = req.body || {}; // 'again' | 'hard' | 'good' | 'easy'
+  const { rows } = await db.execute({
+    sql: `SELECT * FROM cards WHERE id=?`,
+    args: [cardId],
+  });
+  const card = rows[0];
+  if (!card) return res.status(404).json({ error: "card not found" });
+
+  let nextBox = card.box;
+  let nextDue = new Date();
+
+  switch (rating) {
+    case "again":
+      nextBox = 1;
+      nextDue = new Date(Date.now() + 5 * 60 * 1000); // 5 Minuten
+      break;
+    case "hard":
+      nextBox = Math.max(1, card.box);
+      nextDue.setDate(nextDue.getDate() + 1);
+      break;
+    case "good":
+      nextBox = Math.min(5, card.box + 1);
+      nextDue.setDate(nextDue.getDate() + boxIntervals[nextBox]);
+      break;
+    case "easy":
+      nextBox = Math.min(5, card.box + 2);
+      nextDue.setDate(
+        nextDue.getDate() + (boxIntervals[Math.min(5, nextBox)] || 3)
+      );
+      break;
+    default:
+      return res.status(400).json({ error: "invalid rating" });
+  }
+
+  const iso = nextDue.toISOString();
+  const now = new Date().toISOString();
+  await db.execute({
+    sql: `UPDATE cards SET box=?, due_at=?, updated_at=? WHERE id=?`,
+    args: [nextBox, iso, now, cardId],
+  });
+
+  const { rows: updatedRows } = await db.execute({
+    sql: `SELECT * FROM cards WHERE id=?`,
+    args: [cardId],
+  });
+  res.json(updatedRows[0]);
+});
+
+
 
 const port = process.env.PORT || 8080;
 app.listen(port, () => {
