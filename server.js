@@ -230,8 +230,9 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
   res.json(card || null);
 });
 
-app.post("/api/study/review", requireAuth, async (req, res) => {
-  const { cardId, rating } = req.body || {}; // 'again' | 'hard' | 'good' | 'easy'
+app.post("/api/stacks/:stackId/cards/:cardId/review", requireAuth, async (req, res) => {
+  const { cardId } = req.params;
+  const { rating } = req.body || {}; // 'again' | 'hard' | 'good' | 'easy'
   const { rows } = await db.execute({
     sql: `SELECT * FROM cards WHERE id=?`,
     args: [cardId],
