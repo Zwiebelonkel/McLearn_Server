@@ -197,8 +197,22 @@ app.post("/api/cards", requireAuth, async (req, res) => {
 
 const boxIntervals = [0, 1, 3, 7, 16, 35]; // Index = Box, in Tagen
 
-app.get("/api/stacks/:stackId/study/next", requireAuth, async (req, res) => {
+app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
   const { stackId } = req.params;
+  
+  const { rows: stacks } = await db.execute(
+    "SELECT * FROM stacks WHERE id=?",
+    [stackId]
+  );
+  const stack = stacks[0];
+  if (!stack) {
+    return res.status(404).json({ error: "stack not found" });
+  }
+
+  if (!stack.is_public && (!req.user || stack.user_id !== req.user.id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  
   const now = new Date().toISOString();
   // Nächste fällige Karte; wenn keine fällig → irgendeine Karte (zum Start)
   const { rows: dueRows } = await db.execute({
