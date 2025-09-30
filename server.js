@@ -296,6 +296,23 @@ app.post("/api/stacks/:stackId/cards/:cardId/review", requireAuth, async (req, r
   res.json(updatedRows[0]);
 });
 
+// Einzelne Karte per ID abrufen
+app.get("/api/cards/:id", optionalAuth, async (req, res) => {
+  const { id } = req.params;
+
+  const { rows } = await db.execute("SELECT * FROM cards WHERE id=?", [id]);
+  const card = rows[0];
+  if (!card) return res.status(404).json({ error: "card not found" });
+
+  // Zugriffsschutz auf den zugehörigen Stack
+  const { rows: stackRows } = await db.execute("SELECT * FROM stacks WHERE id=?", [card.stack_id]);
+  const stack = stackRows[0];
+  if (!stack || (!stack.is_public && (!req.user || req.user.id !== stack.user_id))) {
+    return res.status(403).json({ error: "forbidden" });
+  }
+
+  res.json(card);
+});
 
 
 const port = process.env.PORT || 8080;
