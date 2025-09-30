@@ -283,5 +283,5 @@ app.post("/api/study/review", requireAuth, async (req, res) => {
 
 const port = process.env.PORT || 8080;
 app.listen(port, () => {
-  console.log(`✅ API läuft auf http://localhost:${port}`);
+  console.log(`✅ Yappy läuft auf http://localhost:${port}`);
 });
