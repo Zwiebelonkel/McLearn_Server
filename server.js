@@ -199,7 +199,7 @@ const boxIntervals = [0, 1, 3, 7, 16, 35]; // Index = Box, in Tagen
 
 app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
   const { stackId } = req.params;
-  
+
   const { rows: stacks } = await db.execute(
     "SELECT * FROM stacks WHERE id=?",
     [stackId]
@@ -209,25 +209,40 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
     return res.status(404).json({ error: "stack not found" });
   }
 
+  // Schutz für private Stacks
   if (!stack.is_public && (!req.user || stack.user_id !== req.user.id)) {
     return res.status(403).json({ error: "Forbidden" });
   }
-  
+
   res.setHeader('Cache-Control', 'no-store');
+
   const now = new Date().toISOString();
-  // Nächste fällige Karte; wenn keine fällig → irgendeine Karte (zum Start)
-  const { rows: dueRows } = await db.execute({
-    sql: `SELECT * FROM cards WHERE stack_id=? AND due_at<=? ORDER BY due_at ASC LIMIT 1`,
-    args: [stackId, now],
-  });
-  let card = dueRows[0];
-  if (!card) {
+
+  let card;
+
+  if (req.user && stack.user_id === req.user.id) {
+    // 👤 Eigener Stack → Due-Logik anwenden
+    const { rows: dueRows } = await db.execute({
+      sql: `SELECT * FROM cards WHERE stack_id=? AND due_at<=? ORDER BY due_at ASC LIMIT 1`,
+      args: [stackId, now],
+    });
+    card = dueRows[0];
+    if (!card) {
+      const { rows: randomRows } = await db.execute({
+        sql: `SELECT * FROM cards WHERE stack_id=? ORDER BY RANDOM() LIMIT 1`,
+        args: [stackId],
+      });
+      card = randomRows[0];
+    }
+  } else {
+    // 👀 Fremder öffentlicher Stack → immer zufällige Karte
     const { rows: randomRows } = await db.execute({
       sql: `SELECT * FROM cards WHERE stack_id=? ORDER BY RANDOM() LIMIT 1`,
       args: [stackId],
     });
     card = randomRows[0];
   }
+
   res.json(card || null);
 });
 
