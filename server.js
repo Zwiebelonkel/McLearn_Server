@@ -314,6 +314,39 @@ app.get("/api/cards/:id", optionalAuth, async (req, res) => {
   res.json(card);
 });
 
+// Karte aktualisieren
+app.patch("/api/cards/:id", requireAuth, async (req, res) => {
+  const { id } = req.params;
+  const { front, back } = req.body || {};
+
+  if (!front?.trim() || !back?.trim()) {
+    return res.status(400).json({ error: "front and back required" });
+  }
+
+  const now = new Date().toISOString();
+  await db.execute({
+    sql: `UPDATE cards SET front=?, back=?, updated_at=? WHERE id=?`,
+    args: [front.trim(), back.trim(), now, id],
+  });
+
+  const { rows } = await db.execute("SELECT * FROM cards WHERE id=?", [id]);
+  if (!rows.length) return res.status(404).json({ error: "not found" });
+
+  res.json(rows[0]);
+});
+
+// Karte löschen
+app.delete("/api/cards/:id", requireAuth, async (req, res) => {
+  const { id } = req.params;
+
+  await db.execute({
+    sql: `DELETE FROM cards WHERE id=?`,
+    args: [id],
+  });
+
+  res.status(204).end();
+});
+
 
 const port = process.env.PORT || 8080;
 app.listen(port, () => {
