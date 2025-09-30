@@ -70,14 +70,20 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 // Alle eigenen + öffentlichen Stacks
 app.get("/api/stacks", requireAuth, async (req, res) => {
   const userId = req.user.id;
-  const { rows } = await db.execute(
-    `SELECT * FROM stacks 
-     WHERE is_public = 1 OR user_id = ? 
-     ORDER BY created_at DESC`,
-    [userId]
-  );
+  const { rows } = await db.execute({
+    sql: `
+      SELECT s.id, s.name, s.is_public, s.created_at, s.updated_at, s.user_id, u.username as owner_name
+      FROM stacks s
+      JOIN users u ON s.user_id = u.id
+      WHERE s.is_public = 1 OR s.user_id = ?
+      ORDER BY s.created_at DESC
+    `,
+    args: [userId],
+  });
+
   res.json(rows);
 });
+
 
 // Stack erstellen
 app.post("/api/stacks", requireAuth, async (req, res) => {
@@ -93,14 +99,14 @@ app.post("/api/stacks", requireAuth, async (req, res) => {
     args: [id, req.user.id, name.trim(), is_public ? 1 : 0, now, now],
   });
 
-  const { rows } = await db.execute("SELECT * FROM stacks WHERE id=?", [id]);
+  const { rows } = await db.execute("SELECT s.*, u.username as owner_name FROM stacks s JOIN users u ON s.user_id = u.id WHERE s.id=?", [id]);
   res.status(201).json(rows[0]);
 });
 
 // Einzelnen Stack holen
 app.get("/api/stacks/:id", requireAuth, async (req, res) => {
   const { id } = req.params;
-  const { rows } = await db.execute("SELECT * FROM stacks WHERE id=?", [id]);
+  const { rows } = await db.execute("SELECT s.*, u.username as owner_name FROM stacks s JOIN users u ON s.user_id = u.id WHERE s.id=?", [id]);
   const stack = rows[0];
   if (!stack) return res.status(404).json({ error: "not found" });
 
@@ -123,7 +129,7 @@ app.patch("/api/stacks/:id", requireAuth, async (req, res) => {
     args: [name.trim(), is_public ? 1 : 0, now, id, req.user.id],
   });
 
-  const { rows } = await db.execute("SELECT * FROM stacks WHERE id=?", [id]);
+  const { rows } = await db.execute("SELECT s.*, u.username as owner_name FROM stacks s JOIN users u ON s.user_id = u.id WHERE s.id=?", [id]);
   if (!rows.length) return res.status(404).json({ error: "not found" });
   res.json(rows[0]);
 });
