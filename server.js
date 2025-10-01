@@ -70,12 +70,22 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 // Alle öffentlichen Stacks, plus eigene für eingeloggte Nutzer
 app.get("/api/stacks", optionalAuth, async (req, res) => {
   const userId = req.user?.id;
+  const args = [];
+
   let sql = `
-    SELECT s.id, s.name, s.is_public, s.created_at, s.updated_at, s.user_id, u.username as owner_name
+    SELECT 
+      s.id,
+      s.name,
+      s.is_public,
+      s.created_at,
+      s.updated_at,
+      s.user_id,
+      u.username as owner_name,
+      COUNT(c.id) as card_amount
     FROM stacks s
     JOIN users u ON s.user_id = u.id
+    LEFT JOIN cards c ON c.stack_id = s.id
   `;
-  const args = [];
 
   if (userId) {
     sql += " WHERE s.is_public = 1 OR s.user_id = ?";
@@ -84,11 +94,12 @@ app.get("/api/stacks", optionalAuth, async (req, res) => {
     sql += " WHERE s.is_public = 1";
   }
 
-  sql += " ORDER BY s.created_at DESC";
+  sql += " GROUP BY s.id ORDER BY s.created_at DESC";
 
   const { rows } = await db.execute({ sql, args });
   res.json(rows);
 });
+
 
 
 // Stack erstellen
