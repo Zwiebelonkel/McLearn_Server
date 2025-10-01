@@ -189,6 +189,7 @@ app.get("/api/cards", optionalAuth, async (req, res) => {
 
 // Karte erstellen
 app.post("/api/cards", requireAuth, async (req, res) => {
+  console.log(req.body);
   const { stack_id, front, back } = req.body || {};
   if (!stack_id || !front?.trim() || !back?.trim()) {
     return res.status(400).json({ error: "stack_id, front, back required" });
