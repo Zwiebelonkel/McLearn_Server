@@ -4,17 +4,19 @@ import cors from "cors";
 import { nanoid } from "nanoid";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import db from './db.js';
+import db from "./db.js";
 import { requireAuth, optionalAuth } from "./auth.js";
 
 const app = express();
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret';
+const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret";
 
-app.use(cors({
-  origin: "*",
-  methods: ["GET", "POST", "PATCH", "DELETE"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-API-Key"],
-}));
+app.use(
+  cors({
+    origin: "*",
+    methods: ["GET", "POST", "PATCH", "DELETE"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-API-Key"],
+  })
+);
 
 app.use(express.json());
 
@@ -100,8 +102,6 @@ app.get("/api/stacks", optionalAuth, async (req, res) => {
   res.json(rows);
 });
 
-
-
 // Stack erstellen
 app.post("/api/stacks", requireAuth, async (req, res) => {
   const { name, is_public } = req.body || {};
@@ -116,14 +116,20 @@ app.post("/api/stacks", requireAuth, async (req, res) => {
     args: [id, req.user.id, name.trim(), is_public ? 1 : 0, now, now],
   });
 
-  const { rows } = await db.execute("SELECT s.*, u.username as owner_name FROM stacks s JOIN users u ON s.user_id = u.id WHERE s.id=?", [id]);
+  const { rows } = await db.execute(
+    "SELECT s.*, u.username as owner_name FROM stacks s JOIN users u ON s.user_id = u.id WHERE s.id=?",
+    [id]
+  );
   res.status(201).json(rows[0]);
 });
 
 // Einzelnen Stack holen
 app.get("/api/stacks/:id", optionalAuth, async (req, res) => {
   const { id } = req.params;
-  const { rows } = await db.execute("SELECT s.*, u.username as owner_name FROM stacks s JOIN users u ON s.user_id = u.id WHERE s.id=?", [id]);
+  const { rows } = await db.execute(
+    "SELECT s.*, u.username as owner_name FROM stacks s JOIN users u ON s.user_id = u.id WHERE s.id=?",
+    [id]
+  );
   const stack = rows[0];
   if (!stack) return res.status(404).json({ error: "not found" });
 
@@ -147,7 +153,10 @@ app.patch("/api/stacks/:id", requireAuth, async (req, res) => {
     args: [name.trim(), is_public ? 1 : 0, now, id, req.user.id],
   });
 
-  const { rows } = await db.execute("SELECT s.*, u.username as owner_name FROM stacks s JOIN users u ON s.user_id = u.id WHERE s.id=?", [id]);
+  const { rows } = await db.execute(
+    "SELECT s.*, u.username as owner_name FROM stacks s JOIN users u ON s.user_id = u.id WHERE s.id=?",
+    [id]
+  );
   if (!rows.length) return res.status(404).json({ error: "not found" });
   res.json(rows[0]);
 });
@@ -169,10 +178,9 @@ app.get("/api/cards", optionalAuth, async (req, res) => {
   const { stackId } = req.query;
   if (!stackId) return res.status(400).json({ error: "stackId required" });
 
-  const { rows: stacks } = await db.execute(
-    "SELECT * FROM stacks WHERE id=?",
-    [stackId]
-  );
+  const { rows: stacks } = await db.execute("SELECT * FROM stacks WHERE id=?", [
+    stackId,
+  ]);
   const stack = stacks[0];
   if (!stack) return res.status(404).json({ error: "stack not found" });
 
@@ -212,10 +220,9 @@ const boxIntervals = [0, 1, 3, 7, 16, 35]; // Index = Box, in Tagen
 app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
   const { stackId } = req.params;
 
-  const { rows: stacks } = await db.execute(
-    "SELECT * FROM stacks WHERE id=?",
-    [stackId]
-  );
+  const { rows: stacks } = await db.execute("SELECT * FROM stacks WHERE id=?", [
+    stackId,
+  ]);
   const stack = stacks[0];
   if (!stack) {
     return res.status(404).json({ error: "stack not found" });
@@ -226,7 +233,7 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
     return res.status(403).json({ error: "Forbidden" });
   }
 
-  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader("Cache-Control", "no-store");
 
   const now = new Date().toISOString();
 
@@ -258,55 +265,57 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
   res.json(card || null);
 });
 
-app.post("/api/stacks/:stackId/cards/:cardId/review", requireAuth, async (req, res) => {
-  const { cardId } = req.params;
-  const { rating } = req.body || {}; // 'again' | 'hard' | 'good' | 'easy'
-  const { rows } = await db.execute({
-    sql: `SELECT * FROM cards WHERE id=?`,
-    args: [cardId],
-  });
-  const card = rows[0];
-  if (!card) return res.status(404).json({ error: "card not found" });
+app.post(
+  "/api/stacks/:stackId/cards/:cardId/review",
+  requireAuth,
+  async (req, res) => {
+    const { cardId } = req.params;
+    const { rating } = req.body || {}; // 'again' | 'hard' | 'good' | 'easy'
+    const { rows } = await db.execute({
+      sql: `SELECT * FROM cards WHERE id=?`,
+      args: [cardId],
+    });
+    const card = rows[0];
+    if (!card) return res.status(404).json({ error: "card not found" });
 
-  let nextBox = card.box;
-  let nextDue = new Date();
+    let nextBox = card.box;
+    let nextDue = new Date();
 
-  switch (rating) {
-    case "again":
-      nextBox = 1;
-      nextDue = new Date(Date.now() + 5 * 60 * 1000); // 5 Minuten
-      break;
-    case "hard":
-      nextBox = Math.max(1, card.box);
-      nextDue.setDate(nextDue.getDate() + 1);
-      break;
-    case "good":
-      nextBox = Math.min(5, card.box + 1);
-      nextDue.setDate(nextDue.getDate() + boxIntervals[nextBox]);
-      break;
-    case "easy":
-      nextBox = Math.min(5, card.box + 2);
-      nextDue.setDate(
-        nextDue.getDate() + (boxIntervals[Math.min(5, nextBox)] || 3)
-      );
-      break;
-    default:
-      return res.status(400).json({ error: "invalid rating" });
+    switch (rating) {
+      case "again":
+        nextBox = 1;
+        nextDue = new Date(Date.now() + 5 * 60 * 1000); // 5 Minuten
+        break;
+      case "hard":
+        nextBox = Math.max(1, card.box - 1); // ← FIX HIER
+        nextDue.setDate(nextDue.getDate() + boxIntervals[nextBox]);
+        break;
+      case "good":
+        nextBox = Math.min(5, card.box + 1);
+        nextDue.setDate(nextDue.getDate() + boxIntervals[nextBox]);
+        break;
+      case "easy":
+        nextBox = Math.min(5, card.box + 2);
+        nextDue.setDate(nextDue.getDate() + boxIntervals[nextBox]);
+        break;
+      default:
+        return res.status(400).json({ error: "invalid rating" });
+    }
+
+    const iso = nextDue.toISOString();
+    const now = new Date().toISOString();
+    await db.execute({
+      sql: `UPDATE cards SET box=?, due_at=?, updated_at=? WHERE id=?`,
+      args: [nextBox, iso, now, cardId],
+    });
+
+    const { rows: updatedRows } = await db.execute({
+      sql: `SELECT * FROM cards WHERE id=?`,
+      args: [cardId],
+    });
+    res.json(updatedRows[0]);
   }
-
-  const iso = nextDue.toISOString();
-  const now = new Date().toISOString();
-  await db.execute({
-    sql: `UPDATE cards SET box=?, due_at=?, updated_at=? WHERE id=?`,
-    args: [nextBox, iso, now, cardId],
-  });
-
-  const { rows: updatedRows } = await db.execute({
-    sql: `SELECT * FROM cards WHERE id=?`,
-    args: [cardId],
-  });
-  res.json(updatedRows[0]);
-});
+);
 
 // Einzelne Karte per ID abrufen
 app.get("/api/cards/:id", optionalAuth, async (req, res) => {
@@ -317,9 +326,15 @@ app.get("/api/cards/:id", optionalAuth, async (req, res) => {
   if (!card) return res.status(404).json({ error: "card not found" });
 
   // Zugriffsschutz auf den zugehörigen Stack
-  const { rows: stackRows } = await db.execute("SELECT * FROM stacks WHERE id=?", [card.stack_id]);
+  const { rows: stackRows } = await db.execute(
+    "SELECT * FROM stacks WHERE id=?",
+    [card.stack_id]
+  );
   const stack = stackRows[0];
-  if (!stack || (!stack.is_public && (!req.user || req.user.id !== stack.user_id))) {
+  if (
+    !stack ||
+    (!stack.is_public && (!req.user || req.user.id !== stack.user_id))
+  ) {
     return res.status(403).json({ error: "forbidden" });
   }
 
@@ -358,7 +373,6 @@ app.delete("/api/cards/:id", requireAuth, async (req, res) => {
 
   res.status(204).end();
 });
-
 
 const port = process.env.PORT || 8080;
 app.listen(port, () => {
