@@ -82,10 +82,9 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 // Alle öffentlichen Stacks, plus eigene für eingeloggte Nutzer
 app.get("/api/stacks", optionalAuth, async (req, res) => {
   const userId = req.user?.id;
-  const args = [];
 
   let sql = `
-    SELECT
+    SELECT DISTINCT
       s.id,
       s.name,
       s.is_public,
@@ -97,11 +96,13 @@ app.get("/api/stacks", optionalAuth, async (req, res) => {
     FROM stacks s
     JOIN users u ON s.user_id = u.id
     LEFT JOIN cards c ON c.stack_id = s.id
+    LEFT JOIN stack_collaborators sc ON s.id = sc.stack_id
   `;
 
+  const args = [];
   if (userId) {
-    sql += " WHERE s.is_public = 1 OR s.user_id = ?";
-    args.push(userId);
+    sql += " WHERE s.is_public = 1 OR s.user_id = ? OR sc.user_id = ?";
+    args.push(userId, userId);
   } else {
     sql += " WHERE s.is_public = 1";
   }
