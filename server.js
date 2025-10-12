@@ -62,6 +62,18 @@ app.post("/api/register", async (req, res) => {
   }
 });
 
+/* ========== USERS ========== */
+app.get('/api/users/search', requireAuth, async (req, res) => {
+  const { query } = req.query;
+  if (!query) return res.json([]);
+
+  const { rows } = await db.execute({
+    sql: 'SELECT id, username as name, username as email FROM users WHERE username LIKE ? AND id != ?',
+    args: [`%${query}%`, req.user.id]
+  });
+  res.json(rows);
+});
+
 /* ========== HEALTH ========== */
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
@@ -73,7 +85,7 @@ app.get("/api/stacks", optionalAuth, async (req, res) => {
   const args = [];
 
   let sql = `
-    SELECT 
+    SELECT
       s.id,
       s.name,
       s.is_public,
@@ -142,7 +154,7 @@ app.patch("/api/stacks/:id", requireAuth, async (req, res) => {
 
   const now = new Date().toISOString();
   await db.execute({
-    sql: `UPDATE stacks SET name=?, is_public=?, updated_at=? 
+    sql: `UPDATE stacks SET name=?, is_public=?, updated_at=?
           WHERE id=? AND user_id=?`,
     args: [name.trim(), is_public ? 1 : 0, now, id, req.user.id],
   });
@@ -162,6 +174,69 @@ app.delete("/api/stacks/:id", requireAuth, async (req, res) => {
   res.status(204).end();
 });
 
+/* ========== COLLABORATORS ========== */
+
+app.get('/api/stacks/:stackId/collaborators', requireAuth, async (req, res) => {
+  const { stackId } = req.params;
+  const { rows } = await db.execute({
+    sql: `
+      SELECT sc.id, sc.user_id, u.username as user_name
+      FROM stack_collaborators sc
+      JOIN users u ON sc.user_id = u.id
+      WHERE sc.stack_id = ?
+    `,
+    args: [stackId]
+  });
+  res.json(rows);
+});
+
+app.post('/api/stacks/:stackId/collaborators', requireAuth, async (req, res) => {
+  const { stackId } = req.params;
+  const { userId } = req.body;
+
+  const { rows: stackRows } = await db.execute('SELECT user_id FROM stacks WHERE id = ?', [stackId]);
+  if (stackRows.length === 0) return res.status(404).json({ error: 'Stack not found' });
+  if (stackRows[0].user_id !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
+
+  try {
+    const { lastInsertRowid } = await db.execute({
+      sql: 'INSERT INTO stack_collaborators (stack_id, user_id) VALUES (?, ?)',
+      args: [stackId, userId]
+    });
+    const { rows } = await db.execute({
+        sql: `
+        SELECT sc.id, sc.user_id, u.username as user_name
+        FROM stack_collaborators sc
+        JOIN users u ON sc.user_id = u.id
+        WHERE sc.id = ?
+      `,
+      args: [lastInsertRowid]
+    });
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    if (err.message.includes('UNIQUE')) {
+      return res.status(409).json({ error: 'User is already a collaborator.' });
+    }
+    res.status(500).json({ error: 'Failed to add collaborator.' });
+  }
+});
+
+app.delete('/api/stacks/:stackId/collaborators/:collaboratorId', requireAuth, async (req, res) => {
+  const { stackId, collaboratorId } = req.params;
+
+  const { rows: stackRows } = await db.execute('SELECT user_id FROM stacks WHERE id = ?', [stackId]);
+  if (stackRows.length === 0) return res.status(404).json({ error: 'Stack not found' });
+  if (stackRows[0].user_id !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
+
+  await db.execute({
+    sql: 'DELETE FROM stack_collaborators WHERE id = ?',
+    args: [collaboratorId]
+  });
+
+  res.status(204).end();
+});
+
+
 /* ========== CARDS ========== */
 
 // Karten eines Stacks holen
@@ -177,7 +252,14 @@ app.get("/api/cards", optionalAuth, async (req, res) => {
   if (!stack) return res.status(404).json({ error: "stack not found" });
 
   if (!stack.is_public && (!req.user || stack.user_id !== req.user.id)) {
-    return res.status(403).json({ error: "Forbidden" });
+    // Check for collaborators
+    const { rows: collaboratorRows } = await db.execute(
+      'SELECT 1 FROM stack_collaborators WHERE stack_id = ? AND user_id = ?',
+      [stackId, req.user?.id]
+    );
+    if (collaboratorRows.length === 0) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
   }
 
   const { rows } = await db.execute({
@@ -192,6 +274,23 @@ app.post("/api/cards", requireAuth, async (req, res) => {
   const { stack_id, front, back, front_image } = req.body || {};
   if (!stack_id || !front?.trim() || !back?.trim()) {
     return res.status(400).json({ error: "stack_id, front, back required" });
+  }
+
+  const { rows: stacks } = await db.execute(
+    "SELECT * FROM stacks WHERE id=?",
+    [stack_id]
+  );
+  const stack = stacks[0];
+  if (!stack) return res.status(404).json({ error: "stack not found" });
+
+  if (stack.user_id !== req.user.id) {
+    const { rows: collaboratorRows } = await db.execute(
+      'SELECT 1 FROM stack_collaborators WHERE stack_id = ? AND user_id = ?',
+      [stack_id, req.user.id]
+    );
+    if (collaboratorRows.length === 0) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
   }
 
   const id = nanoid();
@@ -222,7 +321,13 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
 
   // Schutz für private Stacks
   if (!stack.is_public && (!req.user || stack.user_id !== req.user.id)) {
-    return res.status(403).json({ error: "Forbidden" });
+    const { rows: collaboratorRows } = await db.execute(
+      'SELECT 1 FROM stack_collaborators WHERE stack_id = ? AND user_id = ?',
+      [stackId, req.user?.id]
+    );
+    if (collaboratorRows.length === 0) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
   }
 
   res.setHeader('Cache-Control', 'no-store');
@@ -258,8 +363,13 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
 });
 
 app.post("/api/stacks/:stackId/cards/:cardId/review", requireAuth, async (req, res) => {
-  const { cardId } = req.params;
+  const { cardId, stackId } = req.params;
   const { rating } = req.body || {}; // 'again' | 'hard' | 'good' | 'easy'
+
+  const { rows: stackRows } = await db.execute('SELECT user_id FROM stacks WHERE id = ?', [stackId]);
+  if (stackRows.length === 0) return res.status(404).json({ error: 'Stack not found' });
+  if (stackRows[0].user_id !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
+  
   const { rows } = await db.execute({
     sql: `SELECT * FROM cards WHERE id=?`,
     args: [cardId],
@@ -319,7 +429,13 @@ app.get("/api/cards/:id", optionalAuth, async (req, res) => {
   const { rows: stackRows } = await db.execute("SELECT * FROM stacks WHERE id=?", [card.stack_id]);
   const stack = stackRows[0];
   if (!stack || (!stack.is_public && (!req.user || req.user.id !== stack.user_id))) {
-    return res.status(403).json({ error: "forbidden" });
+    const { rows: collaboratorRows } = await db.execute(
+      'SELECT 1 FROM stack_collaborators WHERE stack_id = ? AND user_id = ?',
+      [card.stack_id, req.user?.id]
+    );
+    if (collaboratorRows.length === 0) {
+      return res.status(403).json({ error: "forbidden" });
+    }
   }
 
   res.json(card);
@@ -329,6 +445,27 @@ app.get("/api/cards/:id", optionalAuth, async (req, res) => {
 app.patch("/api/cards/:id", requireAuth, async (req, res) => {
   const { id } = req.params;
   const { front, back, front_image } = req.body || {};
+
+  const { rows: cardRows } = await db.execute("SELECT stack_id FROM cards WHERE id=?", [id]);
+  if(cardRows.length === 0) return res.status(404).json({ error: "card not found" });
+  const stack_id = cardRows[0].stack_id;
+
+  const { rows: stacks } = await db.execute(
+    "SELECT * FROM stacks WHERE id=?",
+    [stack_id]
+  );
+  const stack = stacks[0];
+  if (!stack) return res.status(404).json({ error: "stack not found" });
+
+  if (stack.user_id !== req.user.id) {
+    const { rows: collaboratorRows } = await db.execute(
+      'SELECT 1 FROM stack_collaborators WHERE stack_id = ? AND user_id = ?',
+      [stack_id, req.user.id]
+    );
+    if (collaboratorRows.length === 0) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+  }
 
   const updates = {};
   if (front !== undefined) updates.front = front.trim();
@@ -361,6 +498,27 @@ app.patch("/api/cards/:id", requireAuth, async (req, res) => {
 // Karte löschen
 app.delete("/api/cards/:id", requireAuth, async (req, res) => {
   const { id } = req.params;
+
+  const { rows: cardRows } = await db.execute("SELECT stack_id FROM cards WHERE id=?", [id]);
+  if(cardRows.length === 0) return res.status(404).json({ error: "card not found" });
+  const stack_id = cardRows[0].stack_id;
+
+  const { rows: stacks } = await db.execute(
+    "SELECT * FROM stacks WHERE id=?",
+    [stack_id]
+  );
+  const stack = stacks[0];
+  if (!stack) return res.status(404).json({ error: "stack not found" });
+
+  if (stack.user_id !== req.user.id) {
+    const { rows: collaboratorRows } = await db.execute(
+      'SELECT 1 FROM stack_collaborators WHERE stack_id = ? AND user_id = ?',
+      [stack_id, req.user.id]
+    );
+    if (collaboratorRows.length === 0) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+  }
 
   await db.execute({
     sql: `DELETE FROM cards WHERE id=?`,
