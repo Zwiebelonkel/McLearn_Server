@@ -13,7 +13,7 @@ const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret";
 app.use(
   cors({
     origin: "*",
-    methods: ["GET", "POST", "PATCH", "DELETE"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "X-API-Key"],
   })
 );
@@ -372,6 +372,167 @@ app.delete("/api/cards/:id", requireAuth, async (req, res) => {
   });
 
   res.status(204).end();
+});
+
+/* ========== FRIENDS ========== */
+
+// 👥 Alle Freunde des eingeloggten Users
+app.get("/api/friends", requireAuth, async (req, res) => {
+  const userId = req.user.id;
+
+  const { rows } = await db.execute({
+    sql: `
+      SELECT u.id, u.username AS name
+      FROM friends f
+      JOIN users u ON (u.id = f.friend_id)
+      WHERE f.user_id = ?
+      UNION
+      SELECT u.id, u.username AS name
+      FROM friends f
+      JOIN users u ON (u.id = f.user_id)
+      WHERE f.friend_id = ?
+    `,
+    args: [userId, userId],
+  });
+
+  res.json(rows);
+});
+
+// 📩 Ausstehende Freundschaftsanfragen
+app.get("/api/friends/requests", requireAuth, async (req, res) => {
+  const userId = req.user.id;
+
+  const { rows } = await db.execute({
+    sql: `
+      SELECT fr.id, u.id as sender_id, u.username AS name
+      FROM friend_requests fr
+      JOIN users u ON u.id = fr.sender_id
+      WHERE fr.receiver_id = ?
+    `,
+    args: [userId],
+  });
+
+  res.json(rows);
+});
+
+// ➕ Freundschaftsanfrage senden
+app.post("/api/friends/requests", requireAuth, async (req, res) => {
+  const { username } = req.body;
+  if (!username) return res.status(400).json({ error: "username required" });
+
+  const { rows } = await db.execute({
+    sql: "SELECT id FROM users WHERE username = ?",
+    args: [username],
+  });
+  const target = rows[0];
+  if (!target) return res.status(404).json({ error: "user not found" });
+
+  const userId = req.user.id;
+  if (target.id === userId)
+    return res.status(400).json({ error: "cannot add yourself" });
+
+  // Prüfen, ob Freundschaft oder Anfrage schon existiert
+  const { rows: existing } = await db.execute({
+    sql: `
+      SELECT * FROM friend_requests 
+      WHERE (sender_id=? AND receiver_id=?) OR (sender_id=? AND receiver_id=?)
+    `,
+    args: [userId, target.id, target.id, userId],
+  });
+  const { rows: alreadyFriends } = await db.execute({
+    sql: `
+      SELECT * FROM friends
+      WHERE (user_id=? AND friend_id=?) OR (user_id=? AND friend_id=?)
+    `,
+    args: [userId, target.id, target.id, userId],
+  });
+  if (existing.length || alreadyFriends.length)
+    return res.status(409).json({ error: "already requested or friends" });
+
+  await db.execute({
+    sql: "INSERT INTO friend_requests (sender_id, receiver_id) VALUES (?, ?)",
+    args: [userId, target.id],
+  });
+  console.log("Friend requests rows:", rows);
+  res.status(201).json({ success: true });
+});
+
+// ✅ Freundschaftsanfrage akzeptieren
+app.put("/api/friends/requests/:senderId", requireAuth, async (req, res) => {
+  const receiverId = req.user.id;
+  const { senderId } = req.params;
+
+  await db.execute({
+    sql: `
+      INSERT INTO friends (user_id, friend_id)
+      VALUES (?, ?), (?, ?)
+    `,
+    args: [receiverId, senderId, senderId, receiverId],
+  });
+
+  await db.execute({
+    sql: `
+      DELETE FROM friend_requests 
+      WHERE sender_id=? AND receiver_id=?
+    `,
+    args: [senderId, receiverId],
+  });
+
+  res.json({ success: true });
+});
+
+// ❌ Freundschaftsanfrage ablehnen
+app.delete("/api/friends/requests/:senderId", requireAuth, async (req, res) => {
+  const receiverId = req.user.id;
+  const { senderId } = req.params;
+
+  await db.execute({
+    sql: `
+      DELETE FROM friend_requests 
+      WHERE sender_id=? AND receiver_id=?
+    `,
+    args: [senderId, receiverId],
+  });
+
+  res.json({ success: true });
+});
+
+// 🗑️ Freund entfernen
+app.delete("/api/friends/:friendId", requireAuth, async (req, res) => {
+  const userId = req.user.id;
+  const { friendId } = req.params;
+
+  await db.execute({
+    sql: `
+      DELETE FROM friends
+      WHERE (user_id=? AND friend_id=?) OR (user_id=? AND friend_id=?)
+    `,
+    args: [userId, friendId, friendId, userId],
+  });
+
+  res.json({ success: true });
+});
+
+/* ========== USERS ========== */
+
+// 👤 Einzelnen Benutzer abrufen (Profilansicht)
+app.get("/api/users/:id", async (req, res) => {
+  const { id } = req.params;
+
+  const { rows } = await db.execute({
+    sql: `
+      SELECT id, username AS name
+      FROM users
+      WHERE id = ?
+    `,
+    args: [id],
+  });
+
+  if (rows.length === 0) {
+    return res.status(404).json({ error: "user not found" });
+  }
+
+  res.json(rows[0]);
 });
 
 const port = process.env.PORT || 8080;
