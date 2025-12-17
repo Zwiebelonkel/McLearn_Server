@@ -146,8 +146,14 @@ app.get("/api/stacks/:id", optionalAuth, async (req, res) => {
   const stack = rows[0];
   if (!stack) return res.status(404).json({ error: "not found" });
 
-  if (!stack.is_public && (!req.user || stack.user_id !== req.user.id)) {
-    return res.status(403).json({ error: "Forbidden" });
+  // FIX: Check if stack is private and user is not logged in
+  if (!stack.is_public) {
+    if (!req.user) {
+      return res.status(403).json({ error: "Forbidden - Login required" });
+    }
+    if (stack.user_id !== req.user.id) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
   }
 
   res.json(stack);
@@ -279,14 +285,20 @@ app.get("/api/cards", optionalAuth, async (req, res) => {
   const stack = stacks[0];
   if (!stack) return res.status(404).json({ error: "stack not found" });
 
-  if (!stack.is_public && (!req.user || stack.user_id !== req.user.id)) {
-    // Check for collaborators
-    const { rows: collaboratorRows } = await db.execute(
-      "SELECT 1 FROM stack_collaborators WHERE stack_id = ? AND user_id = ?",
-      [stackId, req.user?.id]
-    );
-    if (collaboratorRows.length === 0) {
-      return res.status(403).json({ error: "Forbidden" });
+  // FIX: Check if user is not logged in and stack is private
+  if (!stack.is_public) {
+    if (!req.user) {
+      return res.status(403).json({ error: "Forbidden - Login required" });
+    }
+    if (stack.user_id !== req.user.id) {
+      // Check for collaborators only if user is logged in
+      const { rows: collaboratorRows } = await db.execute(
+        "SELECT 1 FROM stack_collaborators WHERE stack_id = ? AND user_id = ?",
+        [stackId, req.user.id]
+      );
+      if (collaboratorRows.length === 0) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
     }
   }
 
@@ -322,6 +334,10 @@ app.post("/api/cards", requireAuth, async (req, res) => {
 
   const id = nanoid();
   const now = new Date().toISOString();
+  
+  // Ensure front_image is either a string or null, never undefined
+  const imageValue = front_image && front_image.trim() ? front_image.trim() : null;
+  
   await db.execute({
     sql: `INSERT INTO cards(id,stack_id,front,back,front_image,box,due_at,created_at,updated_at)
      VALUES(?,?,?,?,?,1,?,?,?)`,
@@ -330,7 +346,7 @@ app.post("/api/cards", requireAuth, async (req, res) => {
       stack_id,
       front.trim(),
       back.trim(),
-      front_image || null,
+      imageValue,
       now,
       now,
       now,
@@ -354,14 +370,20 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
     return res.status(404).json({ error: "stack not found" });
   }
 
-  // Schutz für private Stacks
-  if (!stack.is_public && (!req.user || stack.user_id !== req.user.id)) {
-    const { rows: collaboratorRows } = await db.execute(
-      "SELECT 1 FROM stack_collaborators WHERE stack_id = ? AND user_id = ?",
-      [stackId, req.user?.id]
-    );
-    if (collaboratorRows.length === 0) {
-      return res.status(403).json({ error: "Forbidden" });
+  // FIX: Schutz für private Stacks - check if user is not logged in first
+  if (!stack.is_public) {
+    if (!req.user) {
+      return res.status(403).json({ error: "Forbidden - Login required" });
+    }
+    if (stack.user_id !== req.user.id) {
+      // Only check collaborators if user is logged in
+      const { rows: collaboratorRows } = await db.execute(
+        "SELECT 1 FROM stack_collaborators WHERE stack_id = ? AND user_id = ?",
+        [stackId, req.user.id]
+      );
+      if (collaboratorRows.length === 0) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
     }
   }
 
@@ -475,16 +497,20 @@ app.get("/api/cards/:id", optionalAuth, async (req, res) => {
     [card.stack_id]
   );
   const stack = stackRows[0];
-  if (
-    !stack ||
-    (!stack.is_public && (!req.user || req.user.id !== stack.user_id))
-  ) {
-    const { rows: collaboratorRows } = await db.execute(
-      "SELECT 1 FROM stack_collaborators WHERE stack_id = ? AND user_id = ?",
-      [card.stack_id, req.user?.id]
-    );
-    if (collaboratorRows.length === 0) {
-      return res.status(403).json({ error: "forbidden" });
+  
+  // FIX: Check if stack is private and user is not logged in
+  if (!stack || !stack.is_public) {
+    if (!req.user) {
+      return res.status(403).json({ error: "Forbidden - Login required" });
+    }
+    if (stack && req.user.id !== stack.user_id) {
+      const { rows: collaboratorRows } = await db.execute(
+        "SELECT 1 FROM stack_collaborators WHERE stack_id = ? AND user_id = ?",
+        [card.stack_id, req.user.id]
+      );
+      if (collaboratorRows.length === 0) {
+        return res.status(403).json({ error: "forbidden" });
+      }
     }
   }
 
@@ -523,7 +549,10 @@ app.patch("/api/cards/:id", requireAuth, async (req, res) => {
   const updates = {};
   if (front !== undefined) updates.front = front.trim();
   if (back !== undefined) updates.back = back.trim();
-  if (front_image !== undefined) updates.front_image = front_image;
+  if (front_image !== undefined) {
+    // Ensure front_image is either a string or null, never undefined
+    updates.front_image = front_image && front_image.trim() ? front_image.trim() : null;
+  }
 
   if (Object.keys(updates).length === 0) {
     const { rows } = await db.execute("SELECT * FROM cards WHERE id=?", [id]);
