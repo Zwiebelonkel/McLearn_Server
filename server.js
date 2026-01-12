@@ -613,6 +613,83 @@ app.delete("/api/cards/:id", requireAuth, async (req, res) => {
   res.status(204).end();
 });
 
+/* ========== SCRIBBLEPAD ========== */
+
+// 📝 Get user's scribblepad
+app.get("/api/scribblepad", requireAuth, async (req, res) => {
+  const userId = req.user.id;
+
+  try {
+    const { rows } = await db.execute({
+      sql: "SELECT * FROM scribblepad WHERE user_id = ?",
+      args: [userId],
+    });
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "ScribblePad not found" });
+    }
+
+    res.json(rows[0]);
+  } catch (err) {
+    console.error("Error fetching scribblepad:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// 💾 Create or update user's scribblepad
+app.post("/api/scribblepad", requireAuth, async (req, res) => {
+  const userId = req.user.id;
+  const { content } = req.body;
+
+  // Validate content
+  if (typeof content !== "string") {
+    return res.status(400).json({ error: "Content must be a string" });
+  }
+
+  try {
+    const now = new Date().toISOString();
+
+    // Check if user already has a scribblepad
+    const { rows: existing } = await db.execute({
+      sql: "SELECT * FROM scribblepad WHERE user_id = ?",
+      args: [userId],
+    });
+
+    if (existing.length > 0) {
+      // Update existing scribblepad
+      await db.execute({
+        sql: "UPDATE scribblepad SET content = ?, updated_at = ? WHERE user_id = ?",
+        args: [content, now, userId],
+      });
+
+      const { rows: updated } = await db.execute({
+        sql: "SELECT * FROM scribblepad WHERE user_id = ?",
+        args: [userId],
+      });
+
+      res.json(updated[0]);
+    } else {
+      // Create new scribblepad
+      const id = nanoid();
+      await db.execute({
+        sql: `INSERT INTO scribblepad (id, user_id, content, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?)`,
+        args: [id, userId, content, now, now],
+      });
+
+      const { rows: created } = await db.execute({
+        sql: "SELECT * FROM scribblepad WHERE id = ?",
+        args: [id],
+      });
+
+      res.status(201).json(created[0]);
+    }
+  } catch (err) {
+    console.error("Error saving scribblepad:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 /* ========== FRIENDS ========== */
 
 // 👥 Alle Freunde des eingeloggten Users
