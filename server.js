@@ -209,7 +209,7 @@ app.get("/api/stacks/:stackId/statistics", optionalAuth, async (req, res) => {
       FROM cards 
       WHERE stack_id = ? AND review_count > 0
       ORDER BY review_count DESC 
-      LIMIT 10
+      LIMIT 5
     `,
     args: [stackId],
   });
@@ -221,7 +221,7 @@ app.get("/api/stacks/:stackId/statistics", optionalAuth, async (req, res) => {
       FROM cards 
       WHERE stack_id = ? AND hard_count > 0
       ORDER BY hard_count DESC, review_count DESC
-      LIMIT 10
+      LIMIT 5
     `,
     args: [stackId],
   });
@@ -233,7 +233,7 @@ app.get("/api/stacks/:stackId/statistics", optionalAuth, async (req, res) => {
       FROM cards 
       WHERE stack_id = ? AND easy_count > 0
       ORDER BY easy_count DESC, box DESC
-      LIMIT 10
+      LIMIT 5
     `,
     args: [stackId],
   });
