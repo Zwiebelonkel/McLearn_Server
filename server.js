@@ -146,7 +146,6 @@ app.get("/api/stacks/:id", optionalAuth, async (req, res) => {
   const stack = rows[0];
   if (!stack) return res.status(404).json({ error: "not found" });
 
-  // FIX: Check if stack is private and user is not logged in
   if (!stack.is_public) {
     if (!req.user) {
       return res.status(403).json({ error: "Forbidden - Login required" });
@@ -157,6 +156,129 @@ app.get("/api/stacks/:id", optionalAuth, async (req, res) => {
   }
 
   res.json(stack);
+});
+
+// 📊 Stack Statistics
+app.get("/api/stacks/:stackId/statistics", optionalAuth, async (req, res) => {
+  const { stackId } = req.params;
+
+  // Check access permissions
+  const { rows: stackRows } = await db.execute(
+    "SELECT * FROM stacks WHERE id = ?",
+    [stackId]
+  );
+  const stack = stackRows[0];
+  if (!stack) return res.status(404).json({ error: "Stack not found" });
+
+  if (!stack.is_public) {
+    if (!req.user) {
+      return res.status(403).json({ error: "Forbidden - Login required" });
+    }
+    if (stack.user_id !== req.user.id) {
+      const { rows: collaboratorRows } = await db.execute(
+        "SELECT 1 FROM stack_collaborators WHERE stack_id = ? AND user_id = ?",
+        [stackId, req.user.id]
+      );
+      if (collaboratorRows.length === 0) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+    }
+  }
+
+  // Get overall statistics
+  const { rows: overallStats } = await db.execute({
+    sql: `
+      SELECT 
+        COUNT(*) as total_cards,
+        AVG(box) as average_box,
+        SUM(review_count) as total_reviews,
+        SUM(again_count) as total_again,
+        SUM(hard_count) as total_hard,
+        SUM(good_count) as total_good,
+        SUM(easy_count) as total_easy
+      FROM cards 
+      WHERE stack_id = ?
+    `,
+    args: [stackId],
+  });
+
+  // Most reviewed cards (top 10)
+  const { rows: mostReviewed } = await db.execute({
+    sql: `
+      SELECT id, front, back, review_count, box
+      FROM cards 
+      WHERE stack_id = ? AND review_count > 0
+      ORDER BY review_count DESC 
+      LIMIT 10
+    `,
+    args: [stackId],
+  });
+
+  // Hardest cards (most "again" ratings, top 10)
+  const { rows: hardestCards } = await db.execute({
+    sql: `
+      SELECT id, front, back, again_count, review_count, box
+      FROM cards 
+      WHERE stack_id = ? AND again_count > 0
+      ORDER BY again_count DESC, review_count DESC
+      LIMIT 10
+    `,
+    args: [stackId],
+  });
+
+  // Easiest cards (most "easy" ratings, top 10)
+  const { rows: easiestCards } = await db.execute({
+    sql: `
+      SELECT id, front, back, easy_count, review_count, box
+      FROM cards 
+      WHERE stack_id = ? AND easy_count > 0
+      ORDER BY easy_count DESC, box DESC
+      LIMIT 10
+    `,
+    args: [stackId],
+  });
+
+  // Box distribution
+  const { rows: boxDistribution } = await db.execute({
+    sql: `
+      SELECT 
+        box,
+        COUNT(*) as count
+      FROM cards 
+      WHERE stack_id = ?
+      GROUP BY box
+      ORDER BY box
+    `,
+    args: [stackId],
+  });
+
+  // Recent review activity (last 30 days)
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const { rows: recentActivity } = await db.execute({
+    sql: `
+      SELECT 
+        DATE(created_at) as date,
+        COUNT(*) as review_count,
+        SUM(CASE WHEN rating = 'again' THEN 1 ELSE 0 END) as again_count,
+        SUM(CASE WHEN rating = 'hard' THEN 1 ELSE 0 END) as hard_count,
+        SUM(CASE WHEN rating = 'good' THEN 1 ELSE 0 END) as good_count,
+        SUM(CASE WHEN rating = 'easy' THEN 1 ELSE 0 END) as easy_count
+      FROM card_reviews
+      WHERE stack_id = ? AND created_at >= ?
+      GROUP BY DATE(created_at)
+      ORDER BY date DESC
+    `,
+    args: [stackId, thirtyDaysAgo],
+  });
+
+  res.json({
+    overall: overallStats[0],
+    mostReviewed,
+    hardestCards,
+    easiestCards,
+    boxDistribution,
+    recentActivity,
+  });
 });
 
 // Stack bearbeiten
@@ -285,13 +407,11 @@ app.get("/api/cards", optionalAuth, async (req, res) => {
   const stack = stacks[0];
   if (!stack) return res.status(404).json({ error: "stack not found" });
 
-  // FIX: Check if user is not logged in and stack is private
   if (!stack.is_public) {
     if (!req.user) {
       return res.status(403).json({ error: "Forbidden - Login required" });
     }
     if (stack.user_id !== req.user.id) {
-      // Check for collaborators only if user is logged in
       const { rows: collaboratorRows } = await db.execute(
         "SELECT 1 FROM stack_collaborators WHERE stack_id = ? AND user_id = ?",
         [stackId, req.user.id]
@@ -335,12 +455,11 @@ app.post("/api/cards", requireAuth, async (req, res) => {
   const id = nanoid();
   const now = new Date().toISOString();
   
-  // Ensure front_image is either a string or null, never undefined
   const imageValue = front_image && front_image.trim() ? front_image.trim() : null;
   
   await db.execute({
-    sql: `INSERT INTO cards(id,stack_id,front,back,front_image,box,due_at,created_at,updated_at)
-     VALUES(?,?,?,?,?,1,?,?,?)`,
+    sql: `INSERT INTO cards(id,stack_id,front,back,front_image,box,due_at,review_count,again_count,hard_count,good_count,easy_count,created_at,updated_at)
+     VALUES(?,?,?,?,?,1,?,0,0,0,0,0,?,?)`,
     args: [
       id,
       stack_id,
@@ -357,7 +476,7 @@ app.post("/api/cards", requireAuth, async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
-const boxIntervals = [0, 1, 3, 7, 16, 35]; // Index = Box, in Tagen
+const boxIntervals = [0, 1, 3, 7, 16, 35];
 
 app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
   const { stackId } = req.params;
@@ -370,13 +489,11 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
     return res.status(404).json({ error: "stack not found" });
   }
 
-  // FIX: Schutz für private Stacks - check if user is not logged in first
   if (!stack.is_public) {
     if (!req.user) {
       return res.status(403).json({ error: "Forbidden - Login required" });
     }
     if (stack.user_id !== req.user.id) {
-      // Only check collaborators if user is logged in
       const { rows: collaboratorRows } = await db.execute(
         "SELECT 1 FROM stack_collaborators WHERE stack_id = ? AND user_id = ?",
         [stackId, req.user.id]
@@ -394,7 +511,6 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
   let card;
 
   if (req.user && stack.user_id === req.user.id) {
-    // 👤 Eigener Stack → Due-Logik anwenden
     const { rows: dueRows } = await db.execute({
       sql: `SELECT * FROM cards WHERE stack_id=? AND due_at<=? ORDER BY due_at ASC LIMIT 1`,
       args: [stackId, now],
@@ -408,7 +524,6 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
       card = randomRows[0];
     }
   } else {
-    // 👀 Fremder öffentlicher Stack → immer zufällige Karte
     const { rows: randomRows } = await db.execute({
       sql: `SELECT * FROM cards WHERE stack_id=? ORDER BY RANDOM() LIMIT 1`,
       args: [stackId],
@@ -424,7 +539,7 @@ app.post(
   requireAuth,
   async (req, res) => {
     const { cardId, stackId } = req.params;
-    const { rating } = req.body || {}; // 'again' | 'hard' | 'good' | 'easy'
+    const { rating } = req.body || {};
 
     const { rows: stackRows } = await db.execute(
       "SELECT user_id FROM stacks WHERE id = ?",
@@ -442,29 +557,24 @@ app.post(
     const card = rows[0];
     if (!card) return res.status(404).json({ error: "card not found" });
 
+    const oldBox = card.box;
     let nextBox = card.box;
     let nextDue = new Date();
 
     switch (rating) {
       case "again":
-        // Komplett zurück auf Box 1, sofort wiederholen
         nextBox = 1;
-        nextDue = new Date(Date.now() + 5 * 60 * 1000); // 5 Minuten
+        nextDue = new Date(Date.now() + 5 * 60 * 1000);
         break;
       case "hard":
-        // VERBESSERT: Box um 1 reduzieren (mindestens Box 1)
-        // Wenn die Karte schwer war, sollte sie eine Stufe zurückgehen
         nextBox = Math.max(1, card.box - 1);
-        // Nächste Wiederholung in 1 Tag (gleiche Intervall wie Box 1)
         nextDue.setDate(nextDue.getDate() + boxIntervals[nextBox]);
         break;
       case "good":
-        // Eine Box höher (maximal Box 5)
         nextBox = Math.min(5, card.box + 1);
         nextDue.setDate(nextDue.getDate() + boxIntervals[nextBox]);
         break;
       case "easy":
-        // Zwei Boxen höher (maximal Box 5)
         nextBox = Math.min(5, card.box + 2);
         nextDue.setDate(
           nextDue.getDate() + (boxIntervals[Math.min(5, nextBox)] || 3)
@@ -476,9 +586,27 @@ app.post(
 
     const iso = nextDue.toISOString();
     const now = new Date().toISOString();
+
+    // Update card statistics
+    const ratingColumn = `${rating}_count`;
     await db.execute({
-      sql: `UPDATE cards SET box=?, due_at=?, updated_at=? WHERE id=?`,
-      args: [nextBox, iso, now, cardId],
+      sql: `UPDATE cards 
+            SET box=?, 
+                due_at=?, 
+                review_count = review_count + 1,
+                ${ratingColumn} = ${ratingColumn} + 1,
+                last_reviewed_at = ?,
+                updated_at=? 
+            WHERE id=?`,
+      args: [nextBox, iso, now, now, cardId],
+    });
+
+    // Record review in history
+    const reviewId = nanoid();
+    await db.execute({
+      sql: `INSERT INTO card_reviews (id, card_id, stack_id, user_id, rating, old_box, new_box, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [reviewId, cardId, stackId, req.user.id, rating, oldBox, nextBox, now],
     });
 
     const { rows: updatedRows } = await db.execute({
@@ -497,14 +625,12 @@ app.get("/api/cards/:id", optionalAuth, async (req, res) => {
   const card = rows[0];
   if (!card) return res.status(404).json({ error: "card not found" });
 
-  // Zugriffsschutz auf den zugehörigen Stack
   const { rows: stackRows } = await db.execute(
     "SELECT * FROM stacks WHERE id=?",
     [card.stack_id]
   );
   const stack = stackRows[0];
   
-  // FIX: Check if stack is private and user is not logged in
   if (!stack || !stack.is_public) {
     if (!req.user) {
       return res.status(403).json({ error: "Forbidden - Login required" });
@@ -556,7 +682,6 @@ app.patch("/api/cards/:id", requireAuth, async (req, res) => {
   if (front !== undefined) updates.front = front.trim();
   if (back !== undefined) updates.back = back.trim();
   if (front_image !== undefined) {
-    // Ensure front_image is either a string or null, never undefined
     updates.front_image = front_image && front_image.trim() ? front_image.trim() : null;
   }
 
@@ -621,7 +746,6 @@ app.delete("/api/cards/:id", requireAuth, async (req, res) => {
 
 /* ========== SCRIBBLEPAD ========== */
 
-// 📝 Get user's scribblepad
 app.get("/api/scribblepad", requireAuth, async (req, res) => {
   const userId = req.user.id;
 
@@ -642,12 +766,10 @@ app.get("/api/scribblepad", requireAuth, async (req, res) => {
   }
 });
 
-// 💾 Create or update user's scribblepad
 app.post("/api/scribblepad", requireAuth, async (req, res) => {
   const userId = req.user.id;
   const { content } = req.body;
 
-  // Validate content
   if (typeof content !== "string") {
     return res.status(400).json({ error: "Content must be a string" });
   }
@@ -655,14 +777,12 @@ app.post("/api/scribblepad", requireAuth, async (req, res) => {
   try {
     const now = new Date().toISOString();
 
-    // Check if user already has a scribblepad
     const { rows: existing } = await db.execute({
       sql: "SELECT * FROM scribblepad WHERE user_id = ?",
       args: [userId],
     });
 
     if (existing.length > 0) {
-      // Update existing scribblepad
       await db.execute({
         sql: "UPDATE scribblepad SET content = ?, updated_at = ? WHERE user_id = ?",
         args: [content, now, userId],
@@ -675,7 +795,6 @@ app.post("/api/scribblepad", requireAuth, async (req, res) => {
 
       res.json(updated[0]);
     } else {
-      // Create new scribblepad
       const id = nanoid();
       await db.execute({
         sql: `INSERT INTO scribblepad (id, user_id, content, created_at, updated_at)
@@ -698,7 +817,6 @@ app.post("/api/scribblepad", requireAuth, async (req, res) => {
 
 /* ========== FRIENDS ========== */
 
-// 👥 Alle Freunde des eingeloggten Users
 app.get("/api/friends", requireAuth, async (req, res) => {
   const userId = req.user.id;
 
@@ -720,7 +838,6 @@ app.get("/api/friends", requireAuth, async (req, res) => {
   res.json(rows);
 });
 
-// 📩 Ausstehende Freundschaftsanfragen
 app.get("/api/friends/requests", requireAuth, async (req, res) => {
   const userId = req.user.id;
 
@@ -737,7 +854,6 @@ app.get("/api/friends/requests", requireAuth, async (req, res) => {
   res.json(rows);
 });
 
-// ➕ Freundschaftsanfrage senden
 app.post("/api/friends/requests", requireAuth, async (req, res) => {
   const { username } = req.body;
   if (!username) return res.status(400).json({ error: "username required" });
@@ -753,7 +869,6 @@ app.post("/api/friends/requests", requireAuth, async (req, res) => {
   if (target.id === userId)
     return res.status(400).json({ error: "cannot add yourself" });
 
-  // Prüfen, ob Freundschaft oder Anfrage schon existiert
   const { rows: existing } = await db.execute({
     sql: `
       SELECT * FROM friend_requests 
@@ -779,7 +894,6 @@ app.post("/api/friends/requests", requireAuth, async (req, res) => {
   res.status(201).json({ success: true });
 });
 
-// ✅ Freundschaftsanfrage akzeptieren
 app.put("/api/friends/requests/:senderId", requireAuth, async (req, res) => {
   const receiverId = req.user.id;
   const { senderId } = req.params;
@@ -803,7 +917,6 @@ app.put("/api/friends/requests/:senderId", requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-// ❌ Freundschaftsanfrage ablehnen
 app.delete("/api/friends/requests/:senderId", requireAuth, async (req, res) => {
   const receiverId = req.user.id;
   const { senderId } = req.params;
@@ -819,7 +932,6 @@ app.delete("/api/friends/requests/:senderId", requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-// 🗑️ Freund entfernen
 app.delete("/api/friends/:friendId", requireAuth, async (req, res) => {
   const userId = req.user.id;
   const { friendId } = req.params;
@@ -837,7 +949,6 @@ app.delete("/api/friends/:friendId", requireAuth, async (req, res) => {
 
 /* ========== USERS ========== */
 
-// 👤 Einzelnen Benutzer abrufen (Profilansicht)
 app.get("/api/users/:id", async (req, res) => {
   const { id } = req.params;
 
