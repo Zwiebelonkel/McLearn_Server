@@ -968,6 +968,216 @@ app.get("/api/users/:id", async (req, res) => {
   res.json(rows[0]);
 });
 
+// Add this to your server.js file
+
+/* ========== USER STATISTICS ========== */
+app.get("/api/users/:userId/statistics", optionalAuth, async (req, res) => {
+  const { userId } = req.params;
+
+  // Check if viewing own profile or if profile is public
+  const isOwnProfile = req.user && req.user.id === parseInt(userId);
+  
+  // Get user's public stacks to determine if any info should be public
+  const { rows: userStacks } = await db.execute({
+    sql: "SELECT COUNT(*) as public_count FROM stacks WHERE user_id = ? AND is_public = 1",
+    args: [userId]
+  });
+
+  // If not own profile and user has no public content, return limited stats
+  if (!isOwnProfile && userStacks[0].public_count === 0) {
+    return res.json({
+      overall: {
+        total_stacks: 0,
+        total_cards: 0,
+        total_reviews: 0,
+        average_accuracy: 0
+      },
+      limited: true
+    });
+  }
+
+  // Build WHERE clause based on access
+  const stackFilter = isOwnProfile 
+    ? "s.user_id = ?"
+    : "s.user_id = ? AND s.is_public = 1";
+
+  // Overall Statistics
+  const { rows: overallStats } = await db.execute({
+    sql: `
+      SELECT 
+        COUNT(DISTINCT s.id) as total_stacks,
+        COUNT(DISTINCT c.id) as total_cards,
+        COALESCE(SUM(c.review_count), 0) as total_reviews,
+        COALESCE(AVG(c.box), 0) as average_box,
+        COALESCE(SUM(c.again_count), 0) as total_again,
+        COALESCE(SUM(c.hard_count), 0) as total_hard,
+        COALESCE(SUM(c.good_count), 0) as total_good,
+        COALESCE(SUM(c.easy_count), 0) as total_easy
+      FROM stacks s
+      LEFT JOIN cards c ON c.stack_id = s.id
+      WHERE ${stackFilter}
+    `,
+    args: [userId]
+  });
+
+  // Calculate accuracy
+  const stats = overallStats[0];
+  const totalResponses = stats.total_again + stats.total_hard + stats.total_good + stats.total_easy;
+  const correctResponses = stats.total_good + stats.total_easy;
+  stats.average_accuracy = totalResponses > 0 
+    ? Math.round((correctResponses / totalResponses) * 100) 
+    : 0;
+
+  // Stack Performance (Top 5 best performing stacks)
+  const { rows: topStacks } = await db.execute({
+    sql: `
+      SELECT 
+        s.id,
+        s.name,
+        COUNT(c.id) as card_count,
+        COALESCE(AVG(c.box), 0) as average_box,
+        COALESCE(SUM(c.review_count), 0) as total_reviews
+      FROM stacks s
+      LEFT JOIN cards c ON c.stack_id = s.id
+      WHERE ${stackFilter}
+      GROUP BY s.id
+      HAVING card_count > 0
+      ORDER BY average_box DESC, total_reviews DESC
+      LIMIT 5
+    `,
+    args: [userId]
+  });
+
+  // Most Reviewed Stacks
+  const { rows: mostReviewedStacks } = await db.execute({
+    sql: `
+      SELECT 
+        s.id,
+        s.name,
+        COUNT(c.id) as card_count,
+        COALESCE(SUM(c.review_count), 0) as total_reviews
+      FROM stacks s
+      LEFT JOIN cards c ON c.stack_id = s.id
+      WHERE ${stackFilter}
+      GROUP BY s.id
+      HAVING total_reviews > 0
+      ORDER BY total_reviews DESC
+      LIMIT 5
+    `,
+    args: [userId]
+  });
+
+  // Study Streak (only for own profile)
+  let studyStreak = { current_streak: 0, longest_streak: 0, last_study_date: null };
+  if (isOwnProfile) {
+    const { rows: recentReviews } = await db.execute({
+      sql: `
+        SELECT DISTINCT DATE(created_at) as study_date
+        FROM card_reviews
+        WHERE user_id = ?
+        ORDER BY study_date DESC
+        LIMIT 365
+      `,
+      args: [userId]
+    });
+
+    if (recentReviews.length > 0) {
+      // Calculate current streak
+      let currentStreak = 0;
+      let longestStreak = 0;
+      let tempStreak = 0;
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      for (let i = 0; i < recentReviews.length; i++) {
+        const studyDate = new Date(recentReviews[i].study_date);
+        studyDate.setHours(0, 0, 0, 0);
+        
+        const expectedDate = new Date(today);
+        expectedDate.setDate(today.getDate() - i);
+        expectedDate.setHours(0, 0, 0, 0);
+
+        if (studyDate.getTime() === expectedDate.getTime()) {
+          currentStreak++;
+          tempStreak++;
+          longestStreak = Math.max(longestStreak, tempStreak);
+        } else {
+          if (i === 0) currentStreak = 0;
+          tempStreak = 1;
+          longestStreak = Math.max(longestStreak, tempStreak);
+        }
+      }
+
+      studyStreak = {
+        current_streak: currentStreak,
+        longest_streak: longestStreak,
+        last_study_date: recentReviews[0].study_date
+      };
+    }
+  }
+
+  // Recent Activity (last 30 days)
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const { rows: recentActivity } = await db.execute({
+    sql: `
+      SELECT 
+        DATE(cr.created_at) as date,
+        COUNT(*) as review_count,
+        SUM(CASE WHEN cr.rating = 'again' THEN 1 ELSE 0 END) as again_count,
+        SUM(CASE WHEN cr.rating = 'hard' THEN 1 ELSE 0 END) as hard_count,
+        SUM(CASE WHEN cr.rating = 'good' THEN 1 ELSE 0 END) as good_count,
+        SUM(CASE WHEN cr.rating = 'easy' THEN 1 ELSE 0 END) as easy_count
+      FROM card_reviews cr
+      JOIN stacks s ON cr.stack_id = s.id
+      WHERE ${stackFilter} AND cr.created_at >= ?
+      GROUP BY DATE(cr.created_at)
+      ORDER BY date DESC
+    `,
+    args: [userId, thirtyDaysAgo]
+  });
+
+  // Box Distribution (across all user's cards)
+  const { rows: boxDistribution } = await db.execute({
+    sql: `
+      SELECT 
+        c.box,
+        COUNT(*) as count
+      FROM cards c
+      JOIN stacks s ON c.stack_id = s.id
+      WHERE ${stackFilter}
+      GROUP BY c.box
+      ORDER BY c.box
+    `,
+    args: [userId]
+  });
+
+  // Weekly Review Stats (for chart)
+  const { rows: weeklyStats } = await db.execute({
+    sql: `
+      SELECT 
+        strftime('%w', cr.created_at) as day_of_week,
+        COUNT(*) as review_count
+      FROM card_reviews cr
+      JOIN stacks s ON cr.stack_id = s.id
+      WHERE ${stackFilter} AND cr.created_at >= datetime('now', '-30 days')
+      GROUP BY day_of_week
+      ORDER BY day_of_week
+    `,
+    args: [userId]
+  });
+
+  res.json({
+    overall: stats,
+    topStacks,
+    mostReviewedStacks,
+    studyStreak: isOwnProfile ? studyStreak : null,
+    recentActivity,
+    boxDistribution,
+    weeklyStats,
+    limited: false
+  });
+});
+
 const port = process.env.PORT || 8080;
 app.listen(port, () => {
   console.log(`✅ Yappy läuft auf http://localhost:${port}`);
