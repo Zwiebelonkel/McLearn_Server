@@ -447,18 +447,24 @@ app.post(
 
     switch (rating) {
       case "again":
+        // Komplett zurück auf Box 1, sofort wiederholen
         nextBox = 1;
         nextDue = new Date(Date.now() + 5 * 60 * 1000); // 5 Minuten
         break;
       case "hard":
-        nextBox = Math.max(1, card.box);
-        nextDue.setDate(nextDue.getDate() + 1);
+        // VERBESSERT: Box um 1 reduzieren (mindestens Box 1)
+        // Wenn die Karte schwer war, sollte sie eine Stufe zurückgehen
+        nextBox = Math.max(1, card.box - 1);
+        // Nächste Wiederholung in 1 Tag (gleiche Intervall wie Box 1)
+        nextDue.setDate(nextDue.getDate() + boxIntervals[nextBox]);
         break;
       case "good":
+        // Eine Box höher (maximal Box 5)
         nextBox = Math.min(5, card.box + 1);
         nextDue.setDate(nextDue.getDate() + boxIntervals[nextBox]);
         break;
       case "easy":
+        // Zwei Boxen höher (maximal Box 5)
         nextBox = Math.min(5, card.box + 2);
         nextDue.setDate(
           nextDue.getDate() + (boxIntervals[Math.min(5, nextBox)] || 3)
