@@ -217,10 +217,10 @@ app.get("/api/stacks/:stackId/statistics", optionalAuth, async (req, res) => {
   // Hardest cards (most "again" ratings, top 10)
   const { rows: hardestCards } = await db.execute({
     sql: `
-      SELECT id, front, back, again_count, review_count, box
+      SELECT id, front, back, hard_count, review_count, box
       FROM cards 
-      WHERE stack_id = ? AND again_count > 0
-      ORDER BY again_count DESC, review_count DESC
+      WHERE stack_id = ? AND hard_count > 0
+      ORDER BY hard_count DESC, review_count DESC
       LIMIT 10
     `,
     args: [stackId],
