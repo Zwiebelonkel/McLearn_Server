@@ -1328,7 +1328,7 @@ app.get("/api/users/:userId/statistics", optionalAuth, async (req, res) => {
   });
 
   // ✅ NEW: Hide names of private stacks if not own profile
-  const anonymizeStack = (stack: any) => {
+  const anonymizeStack = (stack) => {
     if (!isOwnProfile && !stack.is_public) {
       return {
         ...stack,
