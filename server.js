@@ -82,7 +82,7 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 /* ========== STACKS ========== */
 
 // Alle öffentlichen Stacks, plus eigene für eingeloggte Nutzer
-// UPDATED: Now includes collaborators as full objects
+// UPDATED: Now includes collaborators as full objects and ratings
 app.get("/api/stacks", optionalAuth, async (req, res) => {
   const userId = req.user?.id;
 
@@ -114,9 +114,10 @@ app.get("/api/stacks", optionalAuth, async (req, res) => {
 
   const { rows } = await db.execute({ sql, args });
   
-  // For each stack, load its collaborators
+  // For each stack, load its collaborators and ratings
   const stacksWithCollaborators = await Promise.all(
     rows.map(async (stack) => {
+      // Get collaborators
       const { rows: collabRows } = await db.execute({
         sql: `
           SELECT sc.id, sc.user_id, u.username as user_name
@@ -127,9 +128,34 @@ app.get("/api/stacks", optionalAuth, async (req, res) => {
         args: [stack.id]
       });
       
+      // Get rating statistics
+      const { rows: ratingStats } = await db.execute({
+        sql: `
+          SELECT 
+            AVG(rating) as average_rating,
+            COUNT(*) as rating_count
+          FROM stack_ratings
+          WHERE stack_id = ?
+        `,
+        args: [stack.id]
+      });
+      
+      // Get user's own rating if logged in
+      let userRating = null;
+      if (userId) {
+        const { rows: userRatingRows } = await db.execute({
+          sql: `SELECT rating FROM stack_ratings WHERE stack_id = ? AND user_id = ?`,
+          args: [stack.id, userId]
+        });
+        userRating = userRatingRows.length > 0 ? userRatingRows[0].rating : null;
+      }
+      
       return {
         ...stack,
-        collaborators: collabRows
+        collaborators: collabRows,
+        average_rating: ratingStats[0]?.average_rating || null,
+        rating_count: ratingStats[0]?.rating_count || 0,
+        user_rating: userRating
       };
     })
   );
@@ -178,6 +204,140 @@ app.get("/api/stacks/:id", optionalAuth, async (req, res) => {
   }
 
   res.json(stack);
+});
+
+// ⭐ Rate a Stack (NEW)
+app.post("/api/stacks/:stackId/rate", requireAuth, async (req, res) => {
+  const { stackId } = req.params;
+  const { rating } = req.body;
+  const userId = req.user.id;
+
+  // Validate rating
+  if (!rating || rating < 1 || rating > 5) {
+    return res.status(400).json({ error: "Rating must be between 1 and 5" });
+  }
+
+  // Check if stack exists and is accessible
+  const { rows: stackRows } = await db.execute(
+    "SELECT * FROM stacks WHERE id = ?",
+    [stackId]
+  );
+  const stack = stackRows[0];
+  if (!stack) {
+    return res.status(404).json({ error: "Stack not found" });
+  }
+
+  // Can't rate your own stack
+  if (stack.user_id === userId) {
+    return res.status(403).json({ error: "You cannot rate your own stack" });
+  }
+
+  // Only allow rating public stacks or stacks shared with user
+  if (!stack.is_public) {
+    const { rows: collaboratorRows } = await db.execute(
+      "SELECT 1 FROM stack_collaborators WHERE stack_id = ? AND user_id = ?",
+      [stackId, userId]
+    );
+    if (collaboratorRows.length === 0) {
+      return res.status(403).json({ error: "You can only rate public stacks or stacks shared with you" });
+    }
+  }
+
+  const now = new Date().toISOString();
+
+  try {
+    // Check if user has already rated this stack
+    const { rows: existingRating } = await db.execute({
+      sql: "SELECT id FROM stack_ratings WHERE stack_id = ? AND user_id = ?",
+      args: [stackId, userId]
+    });
+
+    if (existingRating.length > 0) {
+      // Update existing rating
+      await db.execute({
+        sql: "UPDATE stack_ratings SET rating = ?, updated_at = ? WHERE stack_id = ? AND user_id = ?",
+        args: [rating, now, stackId, userId]
+      });
+    } else {
+      // Insert new rating
+      await db.execute({
+        sql: `INSERT INTO stack_ratings (stack_id, user_id, rating, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?)`,
+        args: [stackId, userId, rating, now, now]
+      });
+    }
+
+    // Get updated rating statistics
+    const { rows: ratingStats } = await db.execute({
+      sql: `
+        SELECT 
+          AVG(rating) as average_rating,
+          COUNT(*) as rating_count
+        FROM stack_ratings
+        WHERE stack_id = ?
+      `,
+      args: [stackId]
+    });
+
+    // Return updated stack with new ratings
+    res.json({
+      id: stack.id,
+      name: stack.name,
+      average_rating: ratingStats[0]?.average_rating || null,
+      rating_count: ratingStats[0]?.rating_count || 0,
+      user_rating: rating
+    });
+
+  } catch (err) {
+    console.error("Error rating stack:", err);
+    res.status(500).json({ error: "Failed to rate stack" });
+  }
+});
+
+// Get stack ratings (NEW - optional, for detailed rating view)
+app.get("/api/stacks/:stackId/ratings", optionalAuth, async (req, res) => {
+  const { stackId } = req.params;
+
+  // Check if stack exists
+  const { rows: stackRows } = await db.execute(
+    "SELECT * FROM stacks WHERE id = ?",
+    [stackId]
+  );
+  if (stackRows.length === 0) {
+    return res.status(404).json({ error: "Stack not found" });
+  }
+
+  // Get rating statistics
+  const { rows: ratingStats } = await db.execute({
+    sql: `
+      SELECT 
+        AVG(rating) as average_rating,
+        COUNT(*) as rating_count,
+        SUM(CASE WHEN rating = 5 THEN 1 ELSE 0 END) as five_stars,
+        SUM(CASE WHEN rating = 4 THEN 1 ELSE 0 END) as four_stars,
+        SUM(CASE WHEN rating = 3 THEN 1 ELSE 0 END) as three_stars,
+        SUM(CASE WHEN rating = 2 THEN 1 ELSE 0 END) as two_stars,
+        SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) as one_star
+      FROM stack_ratings
+      WHERE stack_id = ?
+    `,
+    args: [stackId]
+  });
+
+  // Get user's own rating if logged in
+  let userRating = null;
+  if (req.user) {
+    const { rows: userRatingRows } = await db.execute({
+      sql: `SELECT rating FROM stack_ratings WHERE stack_id = ? AND user_id = ?`,
+      args: [stackId, req.user.id]
+    });
+    userRating = userRatingRows.length > 0 ? userRatingRows[0].rating : null;
+  }
+
+  res.json({
+    ...ratingStats[0],
+    user_rating: userRating
+  });
 });
 
 // 📊 Stack Statistics
