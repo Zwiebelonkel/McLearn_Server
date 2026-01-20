@@ -1222,6 +1222,30 @@ const requireAdmin = async (req, res, next) => {
   next();
 };
 
+/* ========== ADMIN MIDDLEWARE ========== */
+const requireAdmin = async (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "Authentication required" });
+  }
+
+  // Check if user is admin (Luca or McLearn)
+  const { rows } = await db.execute({
+    sql: "SELECT username FROM users WHERE id = ?",
+    args: [req.user.id],
+  });
+
+  if (rows.length === 0) {
+    return res.status(401).json({ error: "User not found" });
+  }
+
+  const username = rows[0].username;
+  if (username !== "Luca" && username !== "McLearn") {
+    return res.status(403).json({ error: "Admin access required" });
+  }
+
+  next();
+};
+
 /* ========== ADMIN ENDPOINTS ========== */
 
 // Get all users
@@ -1232,14 +1256,13 @@ app.get("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
         u.id,
         u.username,
         u.role,
-        u.created_at,
         COUNT(DISTINCT s.id) as stack_count,
         COUNT(DISTINCT c.id) as card_count
       FROM users u
       LEFT JOIN stacks s ON s.user_id = u.id
       LEFT JOIN cards c ON c.stack_id = s.id
       GROUP BY u.id
-      ORDER BY u.created_at DESC
+      ORDER BY u.id DESC
     `,
   });
   res.json(rows);
