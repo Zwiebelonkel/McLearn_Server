@@ -533,51 +533,57 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
   let card;
 
 if (req.user && stack.user_id === req.user.id) {
-  const { rows: dueRows } = await db.execute({
+  // 5-Minuten-Cooldown definieren
+  const cooldown = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+
+  // Karte auswählen, die eligible ist
+  const { rows } = await db.execute({
     sql: `
-      SELECT * FROM cards
-      WHERE stack_id=?
-      AND due_at<=?
-      ORDER BY due_at ASC
+      SELECT *
+      FROM cards
+      WHERE stack_id = ?
+        AND (
+          last_reviewed_at IS NULL
+          OR last_reviewed_at <= ?
+        )
+      ORDER BY
+        box ASC,            -- niedrige Box = häufiger
+        again_count DESC,   -- oft falsch → häufiger
+        hard_count DESC,    -- oft schwer → häufiger
+        due_at ASC,         -- fällige zuerst
+        RANDOM()
       LIMIT 1
     `,
-    args: [stackId, now],
+    args: [stackId, cooldown],
   });
 
-  card = dueRows[0];
+  let card = rows[0];
 
-  // 🔁 In-Day-Reinforcement
+  // Fallback, falls alle Karten im Cooldown sind
   if (!card) {
-    const { rows } = await db.execute({
+    const { rows: fallbackRows } = await db.execute({
       sql: `
-        SELECT * FROM cards
-        WHERE stack_id=?
+        SELECT *
+        FROM cards
+        WHERE stack_id = ?
         ORDER BY
           box ASC,
-          hard_count DESC,
+          again_count DESC,
           RANDOM()
         LIMIT 1
       `,
       args: [stackId],
     });
-
-    card = rows[0];
+    card = fallbackRows[0];
   }
 } else {
-  // Fremde User → fair random
-  const { rows } = await db.execute({
-    sql: `
-      SELECT * FROM cards
-      WHERE stack_id=?
-      ORDER BY RANDOM()
-      LIMIT 1
-    `,
+  // für nicht-eigene Stacks weiterhin random
+  const { rows: randomRows } = await db.execute({
+    sql: `SELECT * FROM cards WHERE stack_id=? ORDER BY RANDOM() LIMIT 1`,
     args: [stackId],
   });
-
-  card = rows[0];
+  card = randomRows[0];
 }
-
 
   res.json(card || null);
 });
