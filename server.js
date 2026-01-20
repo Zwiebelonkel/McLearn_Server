@@ -533,10 +533,8 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
   let card;
 
 if (req.user && stack.user_id === req.user.id) {
-  // 5-Minuten-Cooldown definieren
   const cooldown = new Date(Date.now() - 5 * 60 * 1000).toISOString();
 
-  // Karte auswählen, die eligible ist
   const { rows } = await db.execute({
     sql: `
       SELECT *
@@ -547,19 +545,19 @@ if (req.user && stack.user_id === req.user.id) {
           OR last_reviewed_at <= ?
         )
       ORDER BY
-        box ASC,            -- niedrige Box = häufiger
-        again_count DESC,   -- oft falsch → häufiger
-        hard_count DESC,    -- oft schwer → häufiger
-        due_at ASC,         -- fällige zuerst
+        box ASC,
+        again_count DESC,
+        hard_count DESC,
+        due_at ASC,
         RANDOM()
       LIMIT 1
     `,
     args: [stackId, cooldown],
   });
 
-  let card = rows[0];
+  card = rows[0];
 
-  // Fallback, falls alle Karten im Cooldown sind
+  // fallback
   if (!card) {
     const { rows: fallbackRows } = await db.execute({
       sql: `
@@ -567,6 +565,7 @@ if (req.user && stack.user_id === req.user.id) {
         FROM cards
         WHERE stack_id = ?
         ORDER BY
+          hard_count DESC,
           box ASC,
           again_count DESC,
           RANDOM()
