@@ -503,14 +503,13 @@ const boxIntervals = [0, 1, 3, 7, 16, 35];
 app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
   const { stackId } = req.params;
 
-  const { rows: stacks } = await db.execute("SELECT * FROM stacks WHERE id=?", [
-    stackId,
-  ]);
+  const { rows: stacks } = await db.execute("SELECT * FROM stacks WHERE id=?", [stackId]);
   const stack = stacks[0];
   if (!stack) {
     return res.status(404).json({ error: "stack not found" });
   }
 
+  // Access control
   if (!stack.is_public) {
     if (!req.user) {
       return res.status(403).json({ error: "Forbidden - Login required" });
@@ -529,60 +528,122 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
 
   const now = new Date().toISOString();
-
   let card;
 
-if (req.user && stack.user_id === req.user.id) {
-  const cooldown = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-
-  const { rows } = await db.execute({
-    sql: `
-      SELECT *
-      FROM cards
-      WHERE stack_id = ?
-        AND (
-          last_reviewed_at IS NULL
-          OR last_reviewed_at <= ?
-        )
-      ORDER BY
-        box ASC,
-        again_count DESC,
-        hard_count DESC,
-        due_at ASC,
-        RANDOM()
-      LIMIT 1
-    `,
-    args: [stackId, cooldown],
-  });
-
-  card = rows[0];
-
-  // fallback
-  if (!card) {
-    const { rows: fallbackRows } = await db.execute({
+  if (req.user && stack.user_id === req.user.id) {
+    // ✅ IMPROVED: Intelligente Kartenauswahl für Owner
+    
+    // 1. Priority: Fällige Karten (due_at <= now)
+    const { rows: dueCards } = await db.execute({
       sql: `
-        SELECT *
+        SELECT *, 
+          (julianday('now') - julianday(due_at)) * 24 as hours_overdue,
+          CASE 
+            WHEN box = 1 THEN 10
+            WHEN box = 2 THEN 8
+            WHEN box = 3 THEN 6
+            WHEN box = 4 THEN 4
+            WHEN box = 5 THEN 2
+            ELSE 1
+          END as urgency_score,
+          (again_count * 3 + hard_count * 2) as difficulty_score
         FROM cards
         WHERE stack_id = ?
-        ORDER BY
-          hard_count DESC,
-          box ASC,
-          again_count DESC,
+          AND due_at <= ?
+          AND (last_reviewed_at IS NULL OR last_reviewed_at <= datetime('now', '-5 minutes'))
+        ORDER BY 
+          urgency_score DESC,
+          hours_overdue DESC,
+          difficulty_score DESC,
           RANDOM()
         LIMIT 1
       `,
+      args: [stackId, now],
+    });
+
+    if (dueCards.length > 0) {
+      card = dueCards[0];
+    }
+
+    // 2. Fallback: Neue Karten (never reviewed)
+    if (!card) {
+      const { rows: newCards } = await db.execute({
+        sql: `
+          SELECT *
+          FROM cards
+          WHERE stack_id = ?
+            AND review_count = 0
+          ORDER BY RANDOM()
+          LIMIT 1
+        `,
+        args: [stackId],
+      });
+
+      if (newCards.length > 0) {
+        card = newCards[0];
+      }
+    }
+
+    // 3. Fallback: Schwierigste Karten (ignoriere cooldown für diese)
+    if (!card) {
+      const { rows: hardCards } = await db.execute({
+        sql: `
+          SELECT *,
+            (again_count * 3 + hard_count * 2) as difficulty_score
+          FROM cards
+          WHERE stack_id = ?
+            AND box <= 2
+          ORDER BY 
+            difficulty_score DESC,
+            box ASC,
+            RANDOM()
+          LIMIT 1
+        `,
+        args: [stackId],
+      });
+
+      if (hardCards.length > 0) {
+        card = hardCards[0];
+      }
+    }
+
+    // 4. Final Fallback: Irgendeine Karte (respektiert cooldown)
+    if (!card) {
+      const { rows: anyCards } = await db.execute({
+        sql: `
+          SELECT *
+          FROM cards
+          WHERE stack_id = ?
+            AND (last_reviewed_at IS NULL OR last_reviewed_at <= datetime('now', '-5 minutes'))
+          ORDER BY 
+            box ASC,
+            review_count ASC,
+            RANDOM()
+          LIMIT 1
+        `,
+        args: [stackId],
+      });
+
+      card = anyCards[0];
+    }
+
+    // 5. Absoluter Fallback: Komplett random (wenn alles im cooldown)
+    if (!card) {
+      const { rows: randomCards } = await db.execute({
+        sql: `SELECT * FROM cards WHERE stack_id = ? ORDER BY RANDOM() LIMIT 1`,
+        args: [stackId],
+      });
+      card = randomCards[0];
+    }
+
+  } else {
+    // Für nicht-eigene Stacks: Random (wie vorher)
+    const { rows: randomRows } = await db.execute({
+      sql: `SELECT * FROM cards WHERE stack_id=? ORDER BY RANDOM() LIMIT 1`,
       args: [stackId],
     });
-    card = fallbackRows[0];
+    card = randomRows[0];
   }
-} else {
-  // für nicht-eigene Stacks weiterhin random
-  const { rows: randomRows } = await db.execute({
-    sql: `SELECT * FROM cards WHERE stack_id=? ORDER BY RANDOM() LIMIT 1`,
-    args: [stackId],
-  });
-  card = randomRows[0];
-}
 
   res.json(card || null);
 });
@@ -1034,23 +1095,9 @@ app.get("/api/users/:userId/statistics", optionalAuth, async (req, res) => {
     args: [userId]
   });
 
-  // If not own profile and user has no public content, return limited stats
-  if (!isOwnProfile && userStacks[0].public_count === 0) {
-    return res.json({
-      overall: {
-        total_stacks: 0,
-        total_cards: 0,
-        total_reviews: 0,
-        average_accuracy: 0
-      },
-      limited: true
-    });
-  }
-
   // Build WHERE clause based on access
-  const stackFilter = isOwnProfile 
-    ? "s.user_id = ?"
-    : "s.user_id = ? AND s.is_public = 1";
+  // ✅ NEW: Always include all stacks (public + private), but we'll hide names later
+  const stackFilter = "s.user_id = ?";
 
   // Overall Statistics
   const { rows: overallStats } = await db.execute({
@@ -1085,6 +1132,7 @@ app.get("/api/users/:userId/statistics", optionalAuth, async (req, res) => {
       SELECT 
         s.id,
         s.name,
+        s.is_public,
         COUNT(c.id) as card_count,
         COALESCE(AVG(c.box), 0) as average_box,
         COALESCE(SUM(c.review_count), 0) as total_reviews
@@ -1105,6 +1153,7 @@ app.get("/api/users/:userId/statistics", optionalAuth, async (req, res) => {
       SELECT 
         s.id,
         s.name,
+        s.is_public,
         COUNT(c.id) as card_count,
         COALESCE(SUM(c.review_count), 0) as total_reviews
       FROM stacks s
@@ -1117,6 +1166,21 @@ app.get("/api/users/:userId/statistics", optionalAuth, async (req, res) => {
     `,
     args: [userId]
   });
+
+  // ✅ NEW: Hide names of private stacks if not own profile
+  const anonymizeStack = (stack: any) => {
+    if (!isOwnProfile && !stack.is_public) {
+      return {
+        ...stack,
+        name: 'Private Stack',
+        is_anonymous: true
+      };
+    }
+    return {
+      ...stack,
+      is_anonymous: false
+    };
+  };
 
   // Study Streak (only for own profile)
   let studyStreak = { current_streak: 0, longest_streak: 0, last_study_date: null };
@@ -1219,261 +1283,13 @@ app.get("/api/users/:userId/statistics", optionalAuth, async (req, res) => {
 
   res.json({
     overall: stats,
-    topStacks,
-    mostReviewedStacks,
+    topStacks: topStacks.map(anonymizeStack),
+    mostReviewedStacks: mostReviewedStacks.map(anonymizeStack),
     studyStreak: isOwnProfile ? studyStreak : null,
     recentActivity,
     boxDistribution,
     weeklyStats,
     limited: false
-  });
-});
-
-/* ========== ADMIN MIDDLEWARE ========== */
-const requireAdmin = async (req, res, next) => {
-  if (!req.user) {
-    return res.status(401).json({ error: "Authentication required" });
-  }
-
-  // Check if user is admin (Luca or McLearn)
-  const { rows } = await db.execute({
-    sql: "SELECT username FROM users WHERE id = ?",
-    args: [req.user.id],
-  });
-
-  if (rows.length === 0) {
-    return res.status(401).json({ error: "User not found" });
-  }
-
-  const username = rows[0].username;
-  if (username !== "Luca" && username !== "McLearn") {
-    return res.status(403).json({ error: "Admin access required" });
-  }
-
-  next();
-};
-
-/* ========== ADMIN ENDPOINTS ========== */
-
-// Get all users
-app.get("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
-  const { rows } = await db.execute({
-    sql: `
-      SELECT 
-        u.id,
-        u.username,
-        u.role,
-        COUNT(DISTINCT s.id) as stack_count,
-        COUNT(DISTINCT c.id) as card_count
-      FROM users u
-      LEFT JOIN stacks s ON s.user_id = u.id
-      LEFT JOIN cards c ON c.stack_id = s.id
-      GROUP BY u.id
-      ORDER BY u.id DESC
-    `,
-  });
-  res.json(rows);
-});
-
-// Get all stacks (admin view)
-app.get("/api/admin/stacks", requireAuth, requireAdmin, async (req, res) => {
-  const { rows } = await db.execute({
-    sql: `
-      SELECT 
-        s.id,
-        s.name,
-        s.user_id,
-        s.is_public,
-        s.created_at,
-        s.updated_at,
-        u.username as owner_name,
-        COUNT(c.id) as card_amount
-      FROM stacks s
-      JOIN users u ON s.user_id = u.id
-      LEFT JOIN cards c ON c.stack_id = s.id
-      GROUP BY s.id
-      ORDER BY s.created_at DESC
-    `,
-  });
-  res.json(rows);
-});
-
-// Delete user (admin only)
-app.delete("/api/admin/users/:userId", requireAuth, requireAdmin, async (req, res) => {
-  const { userId } = req.params;
-
-  // Check if trying to delete admin
-  const { rows: userRows } = await db.execute({
-    sql: "SELECT username FROM users WHERE id = ?",
-    args: [userId],
-  });
-
-  if (userRows.length === 0) {
-    return res.status(404).json({ error: "User not found" });
-  }
-
-  const username = userRows[0].username;
-  if (username === "Luca" || username === "McLearn") {
-    return res.status(403).json({ error: "Cannot delete admin users" });
-  }
-
-  // Delete user (cascade will handle stacks, cards, etc.)
-  await db.execute({
-    sql: "DELETE FROM users WHERE id = ?",
-    args: [userId],
-  });
-
-  res.status(204).end();
-});
-
-// Delete stack (admin only)
-app.delete("/api/admin/stacks/:stackId", requireAuth, requireAdmin, async (req, res) => {
-  const { stackId } = req.params;
-
-  // Delete stack (cascade will handle cards)
-  await db.execute({
-    sql: "DELETE FROM stacks WHERE id = ?",
-    args: [stackId],
-  });
-
-  res.status(204).end();
-});
-
-// Update stack visibility (admin only)
-app.patch("/api/admin/stacks/:stackId", requireAuth, requireAdmin, async (req, res) => {
-  const { stackId } = req.params;
-  const { is_public } = req.body;
-
-  const now = new Date().toISOString();
-  await db.execute({
-    sql: "UPDATE stacks SET is_public = ?, updated_at = ? WHERE id = ?",
-    args: [is_public ? 1 : 0, now, stackId],
-  });
-
-  const { rows } = await db.execute({
-    sql: `
-      SELECT 
-        s.*,
-        u.username as owner_name,
-        COUNT(c.id) as card_amount
-      FROM stacks s
-      JOIN users u ON s.user_id = u.id
-      LEFT JOIN cards c ON c.stack_id = s.id
-      WHERE s.id = ?
-      GROUP BY s.id
-    `,
-    args: [stackId],
-  });
-
-  if (rows.length === 0) {
-    return res.status(404).json({ error: "Stack not found" });
-  }
-
-  res.json(rows[0]);
-});
-
-// Transfer stack ownership (admin only)
-app.patch("/api/admin/stacks/:stackId/transfer", requireAuth, requireAdmin, async (req, res) => {
-  const { stackId } = req.params;
-  const { username } = req.body;
-
-  if (!username) {
-    return res.status(400).json({ error: "Username required" });
-  }
-
-  // Find target user
-  const { rows: userRows } = await db.execute({
-    sql: "SELECT id FROM users WHERE username = ?",
-    args: [username],
-  });
-
-  if (userRows.length === 0) {
-    return res.status(404).json({ error: "User not found" });
-  }
-
-  const newUserId = userRows[0].id;
-  const now = new Date().toISOString();
-
-  // Transfer stack
-  await db.execute({
-    sql: "UPDATE stacks SET user_id = ?, updated_at = ? WHERE id = ?",
-    args: [newUserId, now, stackId],
-  });
-
-  const { rows } = await db.execute({
-    sql: `
-      SELECT 
-        s.*,
-        u.username as owner_name,
-        COUNT(c.id) as card_amount
-      FROM stacks s
-      JOIN users u ON s.user_id = u.id
-      LEFT JOIN cards c ON c.stack_id = s.id
-      WHERE s.id = ?
-      GROUP BY s.id
-    `,
-    args: [stackId],
-  });
-
-  if (rows.length === 0) {
-    return res.status(404).json({ error: "Stack not found" });
-  }
-
-  res.json(rows[0]);
-});
-
-// Get admin statistics
-app.get("/api/admin/statistics", requireAuth, requireAdmin, async (req, res) => {
-  // Total users
-  const { rows: userStats } = await db.execute({
-    sql: "SELECT COUNT(*) as total FROM users",
-  });
-
-  // Total stacks
-  const { rows: stackStats } = await db.execute({
-    sql: "SELECT COUNT(*) as total, SUM(CASE WHEN is_public = 1 THEN 1 ELSE 0 END) as public FROM stacks",
-  });
-
-  // Total cards
-  const { rows: cardStats } = await db.execute({
-    sql: "SELECT COUNT(*) as total FROM cards",
-  });
-
-  // Total reviews
-  const { rows: reviewStats } = await db.execute({
-    sql: "SELECT COUNT(*) as total FROM card_reviews",
-  });
-
-  // Recent activity (last 7 days)
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-  const { rows: recentUsers } = await db.execute({
-    sql: "SELECT COUNT(*) as count FROM users WHERE created_at >= ?",
-    args: [sevenDaysAgo],
-  });
-
-  const { rows: recentStacks } = await db.execute({
-    sql: "SELECT COUNT(*) as count FROM stacks WHERE created_at >= ?",
-    args: [sevenDaysAgo],
-  });
-
-  const { rows: recentReviews } = await db.execute({
-    sql: "SELECT COUNT(*) as count FROM card_reviews WHERE created_at >= ?",
-    args: [sevenDaysAgo],
-  });
-
-  res.json({
-    total: {
-      users: userStats[0].total,
-      stacks: stackStats[0].total,
-      publicStacks: stackStats[0].public,
-      cards: cardStats[0].total,
-      reviews: reviewStats[0].total,
-    },
-    recent: {
-      users: recentUsers[0].count,
-      stacks: recentStacks[0].count,
-      reviews: recentReviews[0].count,
-    },
   });
 });
 
