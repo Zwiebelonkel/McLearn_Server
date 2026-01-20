@@ -532,26 +532,52 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
 
   let card;
 
-  if (req.user && stack.user_id === req.user.id) {
-    const { rows: dueRows } = await db.execute({
-      sql: `SELECT * FROM cards WHERE stack_id=? AND due_at<=? ORDER BY due_at ASC LIMIT 1`,
-      args: [stackId, now],
-    });
-    card = dueRows[0];
-    if (!card) {
-      const { rows: randomRows } = await db.execute({
-        sql: `SELECT * FROM cards WHERE stack_id=? ORDER BY RANDOM() LIMIT 1`,
-        args: [stackId],
-      });
-      card = randomRows[0];
-    }
-  } else {
-    const { rows: randomRows } = await db.execute({
-      sql: `SELECT * FROM cards WHERE stack_id=? ORDER BY RANDOM() LIMIT 1`,
+if (req.user && stack.user_id === req.user.id) {
+  const { rows: dueRows } = await db.execute({
+    sql: `
+      SELECT * FROM cards
+      WHERE stack_id=?
+      AND due_at<=?
+      ORDER BY due_at ASC
+      LIMIT 1
+    `,
+    args: [stackId, now],
+  });
+
+  card = dueRows[0];
+
+  // 🔁 In-Day-Reinforcement
+  if (!card) {
+    const { rows } = await db.execute({
+      sql: `
+        SELECT * FROM cards
+        WHERE stack_id=?
+        ORDER BY
+          box ASC,
+          hard_count DESC,
+          RANDOM()
+        LIMIT 1
+      `,
       args: [stackId],
     });
-    card = randomRows[0];
+
+    card = rows[0];
   }
+} else {
+  // Fremde User → fair random
+  const { rows } = await db.execute({
+    sql: `
+      SELECT * FROM cards
+      WHERE stack_id=?
+      ORDER BY RANDOM()
+      LIMIT 1
+    `,
+    args: [stackId],
+  });
+
+  card = rows[0];
+}
+
 
   res.json(card || null);
 });
