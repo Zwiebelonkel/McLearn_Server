@@ -82,6 +82,7 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 /* ========== STACKS ========== */
 
 // Alle öffentlichen Stacks, plus eigene für eingeloggte Nutzer
+// UPDATED: Now includes collaborators as full objects
 app.get("/api/stacks", optionalAuth, async (req, res) => {
   const userId = req.user?.id;
 
@@ -94,7 +95,7 @@ app.get("/api/stacks", optionalAuth, async (req, res) => {
       s.updated_at,
       s.user_id,
       u.username as owner_name,
-      COUNT(c.id) as card_amount
+      COUNT(DISTINCT c.id) as card_amount
     FROM stacks s
     JOIN users u ON s.user_id = u.id
     LEFT JOIN cards c ON c.stack_id = s.id
@@ -112,7 +113,28 @@ app.get("/api/stacks", optionalAuth, async (req, res) => {
   sql += " GROUP BY s.id ORDER BY s.created_at DESC";
 
   const { rows } = await db.execute({ sql, args });
-  res.json(rows);
+  
+  // For each stack, load its collaborators
+  const stacksWithCollaborators = await Promise.all(
+    rows.map(async (stack) => {
+      const { rows: collabRows } = await db.execute({
+        sql: `
+          SELECT sc.id, sc.user_id, u.username as user_name
+          FROM stack_collaborators sc
+          JOIN users u ON sc.user_id = u.id
+          WHERE sc.stack_id = ?
+        `,
+        args: [stack.id]
+      });
+      
+      return {
+        ...stack,
+        collaborators: collabRows
+      };
+    })
+  );
+  
+  res.json(stacksWithCollaborators);
 });
 
 // Stack erstellen
@@ -967,8 +989,6 @@ app.get("/api/users/:id", async (req, res) => {
 
   res.json(rows[0]);
 });
-
-// Add this to your server.js file
 
 /* ========== USER STATISTICS ========== */
 app.get("/api/users/:userId/statistics", optionalAuth, async (req, res) => {
