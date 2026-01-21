@@ -805,10 +805,16 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
       
       if (totalCards[0].count > 0) {
         // Reset all review_sequence values to allow cards to be studied again
-        await db.execute({
-          sql: `UPDATE cards SET review_sequence = NULL WHERE stack_id = ?`,
-          args: [stackId]
-        });
+await db.execute({
+  sql: `
+    UPDATE cards 
+    SET review_sequence = NULL 
+    WHERE stack_id = ?
+      AND review_sequence <= ?
+  `,
+  args: [stackId, currentSeq]
+});
+
         
         // Now try again to get a card
         const { rows: resetCards } = await db.execute({
