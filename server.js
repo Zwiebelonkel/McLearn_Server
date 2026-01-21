@@ -698,7 +698,7 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
     });
     const currentSeq = sessionCountRows[0].current_seq;
 
-    // ✅ NEW: Card-based cooldown system
+    // ✅ FIXED: Card-based cooldown system with proper prioritization
     
     // 1. Priority: Fällige Karten die ihr review_sequence erreicht haben
     const { rows: dueCards } = await db.execute({
@@ -751,7 +751,7 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
       }
     }
 
-    // 3. Fallback: Schwierigste Karten die bereit sind
+    // 3. Fallback: Schwierigste Karten die bereit sind (Box 1-2)
     if (!card) {
       const { rows: hardCards } = await db.execute({
         sql: `
@@ -775,7 +775,7 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
       }
     }
 
-    // 4. Final Fallback: Irgendeine Karte die bereit ist
+    // 4. Fallback: Irgendeine Karte die bereit ist
     if (!card) {
       const { rows: anyCards } = await db.execute({
         sql: `
@@ -795,7 +795,49 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
       card = anyCards[0];
     }
 
-    // 5. Absoluter Fallback: Komplett random (alle Karten sind im Cooldown)
+    // 5. ✅ NEW: If no cards available with current sequence, reset all sequences
+    if (!card) {
+      // Check if all cards are in cooldown
+      const { rows: totalCards } = await db.execute({
+        sql: `SELECT COUNT(*) as count FROM cards WHERE stack_id = ?`,
+        args: [stackId]
+      });
+      
+      if (totalCards[0].count > 0) {
+        // Reset all review_sequence values to allow cards to be studied again
+        await db.execute({
+          sql: `UPDATE cards SET review_sequence = NULL WHERE stack_id = ?`,
+          args: [stackId]
+        });
+        
+        // Now try again to get a card
+        const { rows: resetCards } = await db.execute({
+          sql: `
+            SELECT *, 
+              CASE 
+                WHEN box = 1 THEN 10
+                WHEN box = 2 THEN 8
+                WHEN box = 3 THEN 6
+                WHEN box = 4 THEN 4
+                WHEN box = 5 THEN 2
+                ELSE 1
+              END as urgency_score,
+              (hard_count * 3) as difficulty_score
+            FROM cards 
+            WHERE stack_id = ? AND due_at <= ?
+            ORDER BY urgency_score DESC, difficulty_score DESC, RANDOM()
+            LIMIT 1
+          `,
+          args: [stackId, now]
+        });
+        
+        if (resetCards.length > 0) {
+          card = resetCards[0];
+        }
+      }
+    }
+
+    // 6. Absoluter Fallback: Komplett random (sollte nie erreicht werden)
     if (!card) {
       const { rows: randomCards } = await db.execute({
         sql: `SELECT * FROM cards WHERE stack_id = ? ORDER BY RANDOM() LIMIT 1`,
