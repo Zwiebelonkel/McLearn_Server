@@ -1,11 +1,19 @@
 import jwt from "jsonwebtoken";
+import { JWT_SECRET } from "../config/constants.js";
 
-export const optionalAuth = (req, _res, next) => {
-  const header = req.headers.authorization;
-  if (header?.startsWith("Bearer ")) {
-    try {
-      req.user = jwt.verify(header.split(" ")[1], process.env.JWT_SECRET);
-    } catch {}
+export const optionalAuth = (req, res, next) => {
+  const auth = req.headers.authorization;
+  if (!auth) {
+    req.user = null;
+    return next();
+  }
+
+  const token = auth.replace("Bearer ", "");
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+  } catch (err) {
+    req.user = null;
   }
   next();
 };
