@@ -658,8 +658,6 @@ app.post("/api/cards", requireAuth, async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
-const boxIntervals = [0, 1, 3, 7, 16, 35];
-
 app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
   const { stackId } = req.params;
 
