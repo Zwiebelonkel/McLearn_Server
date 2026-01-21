@@ -7,6 +7,8 @@ import jwt from "jsonwebtoken";
 import db from "./db.js";
 import { requireAuth, optionalAuth } from "./auth.js";
 
+import { BOX_INTERVALS } from "../config/constants.js"
+
 const app = express();
 const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret";
 
