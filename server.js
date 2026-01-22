@@ -700,7 +700,7 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
 
     // ✅ FIXED: Card-based cooldown system with proper prioritization
     
-    // 1. Priority: Fällige Karten die ihr review_sequence erreicht haben
+// 1. Priority: Fällige Karten die ihr review_sequence erreicht haben
     const { rows: dueCards } = await db.execute({
       sql: `
         SELECT *, 
@@ -921,15 +921,16 @@ app.post(
     });
     const currentMaxSeq = maxSeqRows[0].max_seq;
     
-    // Calculate new review_sequence
+// ✅ FIXED: Bessere review_sequence Berechnung
     let newReviewSeq;
     if (rating === "hard") {
-      // For "hard": Add 7-10 cards before this one can appear again
-      const cardsDelay = Math.floor(Math.random() * 4) + 7; // Random between 7-10
+      // Für "hard": 7-10 Karten Verzögerung (größerer Abstand)
+      const cardsDelay = Math.floor(Math.random() * 4) + 7;
       newReviewSeq = currentMaxSeq + cardsDelay;
     } else {
-      // For "good" and "easy": Normal sequence (will be filtered by due_at)
-      newReviewSeq = currentMaxSeq + 1;
+      // Für "good" und "easy": Kleine Verzögerung (1-2 Karten)
+      // Verhindert sofortige Wiederholung auch bei "good"
+      newReviewSeq = currentMaxSeq + Math.floor(Math.random() * 2) + 1;
     }
 
     // Update card statistics
