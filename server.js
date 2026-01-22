@@ -1804,6 +1804,57 @@ app.get("/api/admin/statistics", requireAuth, requireAdmin, async (req, res) => 
   });
 });
 
+// ============================================
+// ADMIN: Reset Review Sequences Endpoint
+// Füge das zu deinen Admin Endpoints hinzu (nach den anderen admin endpoints)
+// ============================================
+
+// Reset review sequences for a stack (admin only)
+app.post("/api/admin/stacks/:stackId/reset-sequences", requireAuth, requireAdmin, async (req, res) => {
+  const { stackId } = req.params;
+
+  try {
+    // Check if stack exists
+    const { rows: stackRows } = await db.execute({
+      sql: "SELECT id, name FROM stacks WHERE id = ?",
+      args: [stackId],
+    });
+
+    if (stackRows.length === 0) {
+      return res.status(404).json({ error: "Stack not found" });
+    }
+
+    const stack = stackRows[0];
+
+    // Reset all review_sequence values for this stack
+    await db.execute({
+      sql: "UPDATE cards SET review_sequence = NULL WHERE stack_id = ?",
+      args: [stackId],
+    });
+
+    // Count how many cards were affected
+    const { rows: countRows } = await db.execute({
+      sql: "SELECT COUNT(*) as count FROM cards WHERE stack_id = ?",
+      args: [stackId],
+    });
+
+    const affectedCards = countRows[0].count;
+
+    console.log(`✅ Reset review sequences for ${affectedCards} cards in stack "${stack.name}"`);
+
+    res.json({
+      success: true,
+      message: `Reset review sequences for ${affectedCards} cards`,
+      stack_id: stackId,
+      affected_cards: affectedCards
+    });
+
+  } catch (err) {
+    console.error("Error resetting review sequences:", err);
+    res.status(500).json({ error: "Failed to reset review sequences" });
+  }
+});
+
 
 const port = process.env.PORT || 8080;
 app.listen(port, () => {
