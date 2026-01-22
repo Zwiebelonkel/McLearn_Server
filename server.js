@@ -706,9 +706,6 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
     }
     
     const currentSeq = session.counter;
-
-    console.log('🔍 Looking for card with currentSeq:', currentSeq);
-
     // 1. Priority: Fällige Karten die ihr review_sequence erreicht haben
     const { rows: dueCards } = await db.execute({
       sql: `
@@ -739,7 +736,6 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
 
     if (dueCards.length > 0) {
       card = dueCards[0];
-      console.log('✅ Found due card:', card.id.substring(0, 8), 'review_seq:', card.review_sequence);
     }
 
     // 2. Fallback: Neue Karten (never reviewed)
@@ -758,7 +754,6 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
 
       if (newCards.length > 0) {
         card = newCards[0];
-        console.log('✅ Found new card:', card.id.substring(0, 8));
       }
     }
 
@@ -783,7 +778,6 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
 
       if (hardCards.length > 0) {
         card = hardCards[0];
-        console.log('✅ Found hard card:', card.id.substring(0, 8));
       }
     }
 
@@ -806,7 +800,6 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
 
       card = anyCards[0];
       if (card) {
-        console.log('✅ Found any card:', card.id.substring(0, 8));
       }
     }
 
@@ -818,7 +811,6 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
       });
       
       if (totalCards[0].count > 0) {
-        console.log('🔄 Resetting session counter - all cards in cooldown');
         
         // ✅ NEU: Reset session counter statt review_sequences
         session.counter = 0;
@@ -847,7 +839,6 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
         
         if (resetCards.length > 0) {
           card = resetCards[0];
-          console.log('✅ Found card after reset:', card.id.substring(0, 8));
         }
       }
     }
@@ -860,7 +851,6 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
       });
       card = randomCards[0];
       if (card) {
-        console.log('⚠️ Using random fallback:', card.id.substring(0, 8));
       }
     }
 
@@ -948,18 +938,6 @@ app.post(
       // Verhindert sofortige Wiederholung auch bei "good"
       newReviewSeq = absoluteCounter + Math.floor(Math.random() * 2) + 1;
     }
-
-    // Debug Output
-    console.log('📊 Card rated:', {
-      cardId: cardId.substring(0, 8),
-      rating,
-      oldBox,
-      nextBox,
-      newReviewSeq,
-      absoluteCounter,
-      delay: newReviewSeq - absoluteCounter,
-      sessionKey: sessionKey.substring(0, 30) + '...'
-    });
 
     // Update card statistics
     const ratingColumn = `${rating}_count`;
