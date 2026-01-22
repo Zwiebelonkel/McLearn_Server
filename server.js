@@ -992,7 +992,15 @@ app.get("/api/cards/:id", optionalAuth, async (req, res) => {
       }
     }
   }
-
+console.log('📊 Card rated:', {
+  cardId: cardId.substring(0, 8),
+  rating,
+  oldBox,
+  nextBox,
+  newReviewSeq,
+  currentMaxSeq,
+  delay: newReviewSeq - currentMaxSeq
+});
   res.json(card);
 });
 
