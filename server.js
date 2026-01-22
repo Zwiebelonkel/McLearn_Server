@@ -691,16 +691,25 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
   let card;
 
   if (req.user && stack.user_id === req.user.id) {
-    // Get current review count for this session
-    const { rows: sessionCountRows } = await db.execute({
-      sql: `SELECT COALESCE(MAX(review_sequence), 0) as current_seq FROM cards WHERE stack_id = ?`,
-      args: [stackId]
-    });
-    const currentSeq = sessionCountRows[0].current_seq;
-
-    // ✅ FIXED: Card-based cooldown system with proper prioritization
+    // ✅ NEU: Session Counter holen/erstellen
+    const sessionKey = `study_session_${req.user.id}_${stackId}`;
+    if (!global.studySessions) global.studySessions = {};
+    if (!global.studySessions[sessionKey]) {
+      global.studySessions[sessionKey] = { counter: 0, startTime: Date.now() };
+    }
     
-// 1. Priority: Fällige Karten die ihr review_sequence erreicht haben
+    // Session auto-reset nach 1 Stunde Inaktivität
+    const session = global.studySessions[sessionKey];
+    if (Date.now() - session.startTime > 3600000) { // 1 Stunde
+      session.counter = 0;
+      session.startTime = Date.now();
+    }
+    
+    const currentSeq = session.counter;
+
+    console.log('🔍 Looking for card with currentSeq:', currentSeq);
+
+    // 1. Priority: Fällige Karten die ihr review_sequence erreicht haben
     const { rows: dueCards } = await db.execute({
       sql: `
         SELECT *, 
@@ -730,6 +739,7 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
 
     if (dueCards.length > 0) {
       card = dueCards[0];
+      console.log('✅ Found due card:', card.id.substring(0, 8), 'review_seq:', card.review_sequence);
     }
 
     // 2. Fallback: Neue Karten (never reviewed)
@@ -748,6 +758,7 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
 
       if (newCards.length > 0) {
         card = newCards[0];
+        console.log('✅ Found new card:', card.id.substring(0, 8));
       }
     }
 
@@ -772,6 +783,7 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
 
       if (hardCards.length > 0) {
         card = hardCards[0];
+        console.log('✅ Found hard card:', card.id.substring(0, 8));
       }
     }
 
@@ -793,30 +805,26 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
       });
 
       card = anyCards[0];
+      if (card) {
+        console.log('✅ Found any card:', card.id.substring(0, 8));
+      }
     }
 
-    // 5. ✅ NEW: If no cards available with current sequence, reset all sequences
+    // 5. ✅ UPDATED: If no cards available, reset session counter
     if (!card) {
-      // Check if all cards are in cooldown
       const { rows: totalCards } = await db.execute({
         sql: `SELECT COUNT(*) as count FROM cards WHERE stack_id = ?`,
         args: [stackId]
       });
       
       if (totalCards[0].count > 0) {
-        // Reset all review_sequence values to allow cards to be studied again
-await db.execute({
-  sql: `
-    UPDATE cards 
-    SET review_sequence = NULL 
-    WHERE stack_id = ?
-      AND review_sequence <= ?
-  `,
-  args: [stackId, currentSeq]
-});
-
+        console.log('🔄 Resetting session counter - all cards in cooldown');
         
-        // Now try again to get a card
+        // ✅ NEU: Reset session counter statt review_sequences
+        session.counter = 0;
+        session.startTime = Date.now();
+        
+        // Jetzt nochmal versuchen
         const { rows: resetCards } = await db.execute({
           sql: `
             SELECT *, 
@@ -839,6 +847,7 @@ await db.execute({
         
         if (resetCards.length > 0) {
           card = resetCards[0];
+          console.log('✅ Found card after reset:', card.id.substring(0, 8));
         }
       }
     }
@@ -850,6 +859,9 @@ await db.execute({
         args: [stackId],
       });
       card = randomCards[0];
+      if (card) {
+        console.log('⚠️ Using random fallback:', card.id.substring(0, 8));
+      }
     }
 
   } else {
@@ -863,6 +875,7 @@ await db.execute({
 
   res.json(card || null);
 });
+
 
 app.post(
   "/api/stacks/:stackId/cards/:cardId/review",
@@ -894,7 +907,6 @@ app.post(
     switch (rating) {
       case "hard":
         nextBox = Math.max(1, card.box - 1);
-        // For "hard": Set due_at to far future, rely on review_sequence for cooldown
         nextDue.setDate(nextDue.getDate() + boxIntervals[nextBox]);
         break;
       case "good":
@@ -914,34 +926,40 @@ app.post(
     const iso = nextDue.toISOString();
     const now = new Date().toISOString();
 
-    // Get current max review_sequence for this stack and user
-    const { rows: maxSeqRows } = await db.execute({
-      sql: `SELECT COALESCE(MAX(review_sequence), 0) as max_seq FROM cards WHERE stack_id = ?`,
-      args: [stackId]
-    });
-    const currentMaxSeq = maxSeqRows[0].max_seq;
+    // ✅ NEU: Session Counter holen/erhöhen
+    const sessionKey = `study_session_${req.user.id}_${stackId}`;
+    if (!global.studySessions) global.studySessions = {};
+    if (!global.studySessions[sessionKey]) {
+      global.studySessions[sessionKey] = { counter: 0, startTime: Date.now() };
+    }
     
-// ✅ FIXED: Bessere review_sequence Berechnung
+    // Counter ERHÖHEN (vor der Berechnung!)
+    global.studySessions[sessionKey].counter++;
+    const absoluteCounter = global.studySessions[sessionKey].counter;
+    
+    // ✅ FIXED: review_sequence basiert jetzt auf absolutem Counter
     let newReviewSeq;
     if (rating === "hard") {
       // Für "hard": 7-10 Karten Verzögerung (größerer Abstand)
       const cardsDelay = Math.floor(Math.random() * 4) + 7;
-      newReviewSeq = currentMaxSeq + cardsDelay;
+      newReviewSeq = absoluteCounter + cardsDelay;
     } else {
       // Für "good" und "easy": Kleine Verzögerung (1-2 Karten)
       // Verhindert sofortige Wiederholung auch bei "good"
-      newReviewSeq = currentMaxSeq + Math.floor(Math.random() * 2) + 1;
+      newReviewSeq = absoluteCounter + Math.floor(Math.random() * 2) + 1;
     }
 
+    // Debug Output
     console.log('📊 Card rated:', {
-  cardId: cardId.substring(0, 8),
-  rating,
-  oldBox,
-  nextBox,
-  newReviewSeq,
-  currentMaxSeq,
-  delay: newReviewSeq - currentMaxSeq
-});
+      cardId: cardId.substring(0, 8),
+      rating,
+      oldBox,
+      nextBox,
+      newReviewSeq,
+      absoluteCounter,
+      delay: newReviewSeq - absoluteCounter,
+      sessionKey: sessionKey.substring(0, 30) + '...'
+    });
 
     // Update card statistics
     const ratingColumn = `${rating}_count`;
