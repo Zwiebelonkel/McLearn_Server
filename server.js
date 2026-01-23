@@ -1833,6 +1833,188 @@ app.post("/api/admin/stacks/:stackId/reset-sequences", requireAuth, requireAdmin
   }
 });
 
+// ========================================
+// MAINTENANCE MODE ENDPOINTS & MIDDLEWARE
+// Füge dies NACH den Admin-Endpoints ein
+// ========================================
+
+/* ========== MAINTENANCE MODE ========== */
+
+// GET: Maintenance Mode Status (öffentlich zugänglich)
+app.get("/api/admin/maintenance-mode", async (req, res) => {
+  try {
+    const { rows } = await db.execute({
+      sql: "SELECT maintenance_mode, updated_at, updated_by FROM app_settings WHERE id = 1",
+      args: []
+    });
+
+    if (rows.length === 0) {
+      // Falls kein Eintrag existiert, erstelle einen
+      await db.execute({
+        sql: "INSERT INTO app_settings (id, maintenance_mode) VALUES (1, 0)",
+        args: []
+      });
+      
+      return res.json({
+        maintenance_mode: false,
+        updated_at: null,
+        updated_by: null
+      });
+    }
+
+    const row = rows[0];
+    res.json({
+      maintenance_mode: row.maintenance_mode === 1,  // SQLite: 1 = true, 0 = false
+      updated_at: row.updated_at,
+      updated_by: row.updated_by
+    });
+
+  } catch (error) {
+    console.error('Error fetching maintenance mode:', error);
+    res.status(500).json({ error: 'Failed to fetch maintenance mode' });
+  }
+});
+
+// POST: Maintenance Mode setzen (nur Admins)
+app.post("/api/admin/maintenance-mode", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { maintenance_mode } = req.body;
+    
+    if (typeof maintenance_mode !== 'boolean') {
+      return res.status(400).json({ 
+        error: 'maintenance_mode must be a boolean' 
+      });
+    }
+
+    const now = new Date().toISOString();
+    const username = req.user.username;
+
+    // Update in Datenbank
+    await db.execute({
+      sql: `
+        INSERT INTO app_settings (id, maintenance_mode, updated_at, updated_by)
+        VALUES (1, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          maintenance_mode = ?,
+          updated_at = ?,
+          updated_by = ?
+      `,
+      args: [
+        maintenance_mode ? 1 : 0,
+        now,
+        username,
+        maintenance_mode ? 1 : 0,
+        now,
+        username
+      ]
+    });
+
+    console.log(`✅ Maintenance mode ${maintenance_mode ? 'ACTIVATED' : 'DEACTIVATED'} by ${username}`);
+
+    res.json({
+      maintenance_mode,
+      updated_at: now,
+      updated_by: username
+    });
+
+  } catch (error) {
+    console.error('Error setting maintenance mode:', error);
+    res.status(500).json({ error: 'Failed to set maintenance mode' });
+  }
+});
+
+/* ========== MAINTENANCE MODE MIDDLEWARE ========== */
+// WICHTIG: Diese Middleware NACH requireAuth und requireAdmin Definitionen,
+// aber VOR den anderen Routes einfügen!
+
+// Cache für Maintenance Mode Status (Performance-Optimierung)
+let maintenanceModeCache = {
+  isActive: false,
+  lastChecked: 0
+};
+
+const CACHE_DURATION = 10000; // 10 Sekunden Cache
+
+// Hilfsfunktion: Prüfe ob User Admin ist
+function isAdmin(username) {
+  return username === 'Luca' || username === 'McLearn';
+}
+
+// Middleware: Prüft Maintenance Mode und blockt nicht-Admin User
+async function maintenanceModeMiddleware(req, res, next) {
+  try {
+    // Liste der erlaubten Routen (immer zugänglich)
+    const allowedPaths = [
+      '/api/login',
+      '/api/register',
+      '/api/admin/maintenance-mode',
+      '/api/health'
+    ];
+
+    // Prüfe ob Route erlaubt ist
+    if (allowedPaths.some(path => req.path.startsWith(path))) {
+      return next();
+    }
+
+    // Prüfe Cache
+    const now = Date.now();
+    if (now - maintenanceModeCache.lastChecked < CACHE_DURATION) {
+      if (!maintenanceModeCache.isActive) {
+        return next();
+      }
+      // Wenn Cache sagt aktiv, prüfe ob User Admin ist
+      if (req.user && isAdmin(req.user.username)) {
+        return next();
+      }
+      return res.status(503).json({
+        error: 'Service temporarily unavailable',
+        message: 'Maintenance mode is active. Please try again later.'
+      });
+    }
+
+    // Lade Status aus Datenbank
+    const { rows } = await db.execute({
+      sql: 'SELECT maintenance_mode FROM app_settings WHERE id = 1',
+      args: []
+    });
+
+    // Update Cache
+    maintenanceModeCache = {
+      isActive: rows[0]?.maintenance_mode === 1,
+      lastChecked: now
+    };
+
+    // Maintenance Mode nicht aktiv -> durchlassen
+    if (!maintenanceModeCache.isActive) {
+      return next();
+    }
+
+    // Maintenance Mode aktiv -> prüfe ob User Admin ist
+    if (req.user && isAdmin(req.user.username)) {
+      return next();
+    }
+
+    // Nicht-Admin User blocken
+    return res.status(503).json({
+      error: 'Service temporarily unavailable',
+      message: 'Maintenance mode is active. Please try again later.'
+    });
+
+  } catch (error) {
+    console.error('Error in maintenance mode middleware:', error);
+    // Bei Fehler durchlassen (Fail-Open Strategie)
+    next();
+  }
+}
+
+// ========================================
+// MIDDLEWARE INTEGRATION
+// Füge diese Zeile NACH app.use(express.json()) 
+// und NACH der optionalAuth Middleware ein:
+// ========================================
+
+// app.use(maintenanceModeMiddleware);
+
 
 const port = process.env.PORT || 8080;
 app.listen(port, () => {
