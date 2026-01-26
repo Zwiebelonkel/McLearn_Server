@@ -86,21 +86,23 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 app.get("/api/stacks", optionalAuth, async (req, res) => {
   const userId = req.user?.id;
 
-  let sql = `
-    SELECT DISTINCT
-      s.id,
-      s.name,
-      s.is_public,
-      s.created_at,
-      s.updated_at,
-      s.user_id,
-      u.username as owner_name,
-      COUNT(DISTINCT c.id) as card_amount
-    FROM stacks s
-    JOIN users u ON s.user_id = u.id
-    LEFT JOIN cards c ON c.stack_id = s.id
-    LEFT JOIN stack_collaborators sc ON s.id = sc.stack_id
-  `;
+let sql = `
+  SELECT DISTINCT
+    s.id,
+    s.name,
+    s.description,
+    s.cover_image,
+    s.is_public,
+    s.created_at,
+    s.updated_at,
+    s.user_id,
+    u.username as owner_name,
+    COUNT(DISTINCT c.id) as card_amount
+  FROM stacks s
+  JOIN users u ON s.user_id = u.id
+  LEFT JOIN cards c ON c.stack_id = s.id
+  LEFT JOIN stack_collaborators sc ON s.id = sc.stack_id
+`;
 
   const args = [];
   if (userId) {
