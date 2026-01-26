@@ -165,16 +165,17 @@ app.get("/api/stacks", optionalAuth, async (req, res) => {
 
 // Stack erstellen
 app.post("/api/stacks", requireAuth, async (req, res) => {
-  const { name, is_public } = req.body || {};
+  const { name, is_public, cover_image } = req.body || {};
   if (!name?.trim()) return res.status(400).json({ error: "name required" });
 
   const id = nanoid();
   const now = new Date().toISOString();
-
+  
+  // ✅ NEW: Include cover_image in INSERT
   await db.execute({
-    sql: `INSERT INTO stacks(id,user_id,name,is_public,created_at,updated_at)
-          VALUES(?,?,?,?,?,?)`,
-    args: [id, req.user.id, name.trim(), is_public ? 1 : 0, now, now],
+    sql: `INSERT INTO stacks(id,user_id,name,is_public,cover_image,created_at,updated_at)
+          VALUES(?,?,?,?,?,?,?)`,
+    args: [id, req.user.id, name.trim(), is_public ? 1 : 0, cover_image || null, now, now],
   });
 
   const { rows } = await db.execute(
@@ -466,14 +467,16 @@ app.get("/api/stacks/:stackId/statistics", optionalAuth, async (req, res) => {
 // Stack bearbeiten
 app.patch("/api/stacks/:id", requireAuth, async (req, res) => {
   const { id } = req.params;
-  const { name, is_public } = req.body || {};
+  const { name, is_public, cover_image } = req.body || {};
   if (!name?.trim()) return res.status(400).json({ error: "name required" });
 
   const now = new Date().toISOString();
+  
+  // ✅ NEW: Include cover_image in UPDATE
   await db.execute({
-    sql: `UPDATE stacks SET name=?, is_public=?, updated_at=?
+    sql: `UPDATE stacks SET name=?, is_public=?, cover_image=?, updated_at=?
           WHERE id=? AND user_id=?`,
-    args: [name.trim(), is_public ? 1 : 0, now, id, req.user.id],
+    args: [name.trim(), is_public ? 1 : 0, cover_image || null, now, id, req.user.id],
   });
 
   const { rows } = await db.execute(
