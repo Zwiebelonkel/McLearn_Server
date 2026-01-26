@@ -477,7 +477,7 @@ app.patch("/api/stacks/:id", requireAuth, async (req, res) => {
   
   // ✅ NEW: Include cover_image in UPDATE
   await db.execute({
-    sql: `UPDATE stacks SET name=?, is_public=?, cover_image=?, updated_at=?
+    sql: `UPDATE stacks SET name=?, is_public=?, cover_image=?,description=?, updated_at=?
           WHERE id=? AND user_id=?`,
     args: [name.trim(), is_public ? 1 : 0, cover_image || null, description || null, now, id, req.user.id],
   });
