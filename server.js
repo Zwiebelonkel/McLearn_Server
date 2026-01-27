@@ -671,13 +671,16 @@ const boxIntervals = [0, 1, 3, 7, 16, 35];
 app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
   const { stackId } = req.params;
 
-  const { rows: stacks } = await db.execute("SELECT * FROM stacks WHERE id=?", [stackId]);
+  const { rows: stacks } = await db.execute(
+    "SELECT * FROM stacks WHERE id = ?",
+    [stackId]
+  );
   const stack = stacks[0];
   if (!stack) {
     return res.status(404).json({ error: "stack not found" });
   }
 
-  // Access control
+  // 🔐 Access Control
   if (!stack.is_public) {
     if (!req.user) {
       return res.status(403).json({ error: "Forbidden - Login required" });
@@ -696,182 +699,100 @@ app.get("/api/stacks/:stackId/study/next", optionalAuth, async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
 
   const now = new Date().toISOString();
-  let card;
+  let card = null;
 
-  if (req.user && stack.user_id === req.user.id) {
-    // ✅ NEU: Session Counter holen/erstellen
-    const sessionKey = `study_session_${req.user.id}_${stackId}`;
-    if (!global.studySessions) global.studySessions = {};
-    if (!global.studySessions[sessionKey]) {
-      global.studySessions[sessionKey] = { counter: 0, startTime: Date.now() };
-    }
-    
-    // Session auto-reset nach 1 Stunde Inaktivität
-    const session = global.studySessions[sessionKey];
-    if (Date.now() - session.startTime > 3600000) { // 1 Stunde
-      session.counter = 0;
-      session.startTime = Date.now();
-    }
-    
-    const currentSeq = session.counter;
-    // 1. Priority: Fällige Karten die ihr review_sequence erreicht haben
-    const { rows: dueCards } = await db.execute({
+  // 🎲 Entscheidung: neu vs alt
+  const roll = Math.random();
+  const OLD_CARD_CHANCE = 0.25; // 25% alte Karten
+
+  // =====================================================
+  // 1️⃣ Alte Karten (fällig + schwierig priorisiert)
+  // =====================================================
+  if (roll < OLD_CARD_CHANCE) {
+    const { rows: oldCards } = await db.execute({
       sql: `
-        SELECT *, 
-          (julianday('now') - julianday(due_at)) * 24 as hours_overdue,
-          CASE 
-            WHEN box = 1 THEN 10
-            WHEN box = 2 THEN 8
-            WHEN box = 3 THEN 6
-            WHEN box = 4 THEN 4
-            WHEN box = 5 THEN 2
-            ELSE 1
-          END as urgency_score,
-          (hard_count * 3) as difficulty_score
+        SELECT *,
+          (hard_count * 3) AS difficulty_score,
+          (julianday('now') - julianday(due_at)) * 24 AS hours_overdue
         FROM cards
         WHERE stack_id = ?
+          AND review_count > 0
           AND due_at <= ?
-          AND (review_sequence IS NULL OR review_sequence <= ?)
-        ORDER BY 
-          urgency_score DESC,
+        ORDER BY
           hours_overdue DESC,
           difficulty_score DESC,
           RANDOM()
         LIMIT 1
       `,
-      args: [stackId, now, currentSeq],
+      args: [stackId, now],
     });
 
-    if (dueCards.length > 0) {
-      card = dueCards[0];
+    if (oldCards.length > 0) {
+      card = oldCards[0];
     }
-
-    // 2. Fallback: Neue Karten (never reviewed)
-    if (!card) {
-      const { rows: newCards } = await db.execute({
-        sql: `
-          SELECT *
-          FROM cards
-          WHERE stack_id = ?
-            AND review_count = 0
-          ORDER BY RANDOM()
-          LIMIT 1
-        `,
-        args: [stackId],
-      });
-
-      if (newCards.length > 0) {
-        card = newCards[0];
-      }
-    }
-
-    // 3. Fallback: Schwierigste Karten die bereit sind (Box 1-2)
-    if (!card) {
-      const { rows: hardCards } = await db.execute({
-        sql: `
-          SELECT *,
-            (hard_count * 3) as difficulty_score
-          FROM cards
-          WHERE stack_id = ?
-            AND box <= 2
-            AND (review_sequence IS NULL OR review_sequence <= ?)
-          ORDER BY 
-            difficulty_score DESC,
-            box ASC,
-            RANDOM()
-          LIMIT 1
-        `,
-        args: [stackId, currentSeq],
-      });
-
-      if (hardCards.length > 0) {
-        card = hardCards[0];
-      }
-    }
-
-    // 4. Fallback: Irgendeine Karte die bereit ist
-    if (!card) {
-      const { rows: anyCards } = await db.execute({
-        sql: `
-          SELECT *
-          FROM cards
-          WHERE stack_id = ?
-            AND (review_sequence IS NULL OR review_sequence <= ?)
-          ORDER BY 
-            box ASC,
-            review_count ASC,
-            RANDOM()
-          LIMIT 1
-        `,
-        args: [stackId, currentSeq],
-      });
-
-      card = anyCards[0];
-      if (card) {
-      }
-    }
-
-    // 5. ✅ UPDATED: If no cards available, reset session counter
-    if (!card) {
-      const { rows: totalCards } = await db.execute({
-        sql: `SELECT COUNT(*) as count FROM cards WHERE stack_id = ?`,
-        args: [stackId]
-      });
-      
-      if (totalCards[0].count > 0) {
-        
-        // ✅ NEU: Reset session counter statt review_sequences
-        session.counter = 0;
-        session.startTime = Date.now();
-        
-        // Jetzt nochmal versuchen
-        const { rows: resetCards } = await db.execute({
-          sql: `
-            SELECT *, 
-              CASE 
-                WHEN box = 1 THEN 10
-                WHEN box = 2 THEN 8
-                WHEN box = 3 THEN 6
-                WHEN box = 4 THEN 4
-                WHEN box = 5 THEN 2
-                ELSE 1
-              END as urgency_score,
-              (hard_count * 3) as difficulty_score
-            FROM cards 
-            WHERE stack_id = ? AND due_at <= ?
-            ORDER BY urgency_score DESC, difficulty_score DESC, RANDOM()
-            LIMIT 1
-          `,
-          args: [stackId, now]
-        });
-        
-        if (resetCards.length > 0) {
-          card = resetCards[0];
-        }
-      }
-    }
-
-    // 6. Absoluter Fallback: Komplett random (sollte nie erreicht werden)
-    if (!card) {
-      const { rows: randomCards } = await db.execute({
-        sql: `SELECT * FROM cards WHERE stack_id = ? ORDER BY RANDOM() LIMIT 1`,
-        args: [stackId],
-      });
-      card = randomCards[0];
-      if (card) {
-      }
-    }
-
-  } else {
-    // Für nicht-eigene Stacks: Random
-    const { rows: randomRows } = await db.execute({
-      sql: `SELECT * FROM cards WHERE stack_id=? ORDER BY RANDOM() LIMIT 1`,
-      args: [stackId],
-    });
-    card = randomRows[0];
   }
 
-  res.json(card || null);
+  // =====================================================
+  // 2️⃣ Neue Karten (SPAM ERLAUBT)
+  // =====================================================
+  if (!card) {
+    const { rows: newCards } = await db.execute({
+      sql: `
+        SELECT *
+        FROM cards
+        WHERE stack_id = ?
+          AND review_count = 0
+        ORDER BY RANDOM()
+        LIMIT 1
+      `,
+      args: [stackId],
+    });
+
+    if (newCards.length > 0) {
+      card = newCards[0];
+    }
+  }
+
+  // =====================================================
+  // 3️⃣ Fallback: irgendeine alte Karte
+  // =====================================================
+  if (!card) {
+    const { rows: anyOld } = await db.execute({
+      sql: `
+        SELECT *
+        FROM cards
+        WHERE stack_id = ?
+          AND review_count > 0
+        ORDER BY RANDOM()
+        LIMIT 1
+      `,
+      args: [stackId],
+    });
+
+    if (anyOld.length > 0) {
+      card = anyOld[0];
+    }
+  }
+
+  // =====================================================
+  // 4️⃣ Absoluter Fallback
+  // =====================================================
+  if (!card) {
+    const { rows: anyCard } = await db.execute({
+      sql: `
+        SELECT *
+        FROM cards
+        WHERE stack_id = ?
+        ORDER BY RANDOM()
+        LIMIT 1
+      `,
+      args: [stackId],
+    });
+
+    card = anyCard[0] || null;
+  }
+
+  res.json(card);
 });
 
 
