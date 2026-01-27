@@ -1198,6 +1198,20 @@ app.get("/api/friends", requireAuth, async (req, res) => {
   res.json(rows);
 });
 
+app.get("/api/friends/requests/sent", requireAuth, async (req, res) => {
+  const userId = req.user.id;
+  const { rows } = await db.execute({
+    sql: `
+      SELECT fr.id, fr.receiver_id, u.username AS name
+      FROM friend_requests fr
+      JOIN users u ON u.id = fr.receiver_id
+      WHERE fr.sender_id = ?
+    `,
+    args: [userId],
+  });
+  res.json(rows);
+});
+
 app.get("/api/friends/requests", requireAuth, async (req, res) => {
   const userId = req.user.id;
 
