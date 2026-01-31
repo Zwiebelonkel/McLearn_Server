@@ -1951,6 +1951,431 @@ async function maintenanceModeMiddleware(req, res, next) {
 }
 
 // ========================================
+// GET: Alle Questions eines Stacks
+// ========================================
+app.get("/api/stacks/:stackId/questions", optionalAuth, async (req, res) => {
+  const { stackId } = req.params;
+
+  // Check if stack exists and is accessible
+  const { rows: stackRows } = await db.execute(
+    "SELECT * FROM stacks WHERE id = ?",
+    [stackId]
+  );
+  const stack = stackRows[0];
+  if (!stack) return res.status(404).json({ error: "Stack not found" });
+
+  // Access control
+  if (!stack.is_public) {
+    if (!req.user) {
+      return res.status(403).json({ error: "Forbidden - Login required" });
+    }
+    if (stack.user_id !== req.user.id) {
+      const { rows: collaboratorRows } = await db.execute(
+        "SELECT 1 FROM stack_collaborators WHERE stack_id = ? AND user_id = ?",
+        [stackId, req.user.id]
+      );
+      if (collaboratorRows.length === 0) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+    }
+  }
+
+  // Get all questions for this stack
+  const { rows } = await db.execute({
+    sql: `SELECT * FROM questions WHERE stack_id = ? ORDER BY created_at ASC`,
+    args: [stackId],
+  });
+
+  res.json(rows);
+});
+
+// ========================================
+// POST: Create a new Question
+// ========================================
+app.post("/api/stacks/:stackId/questions", requireAuth, async (req, res) => {
+  const { stackId } = req.params;
+  const { question, answer_1, answer_2, answer_3, answer_4, correct_answer, explanation, difficulty } = req.body || {};
+
+  // Validation
+  if (!question?.trim() || !answer_1?.trim() || !answer_2?.trim() || !answer_3?.trim() || !answer_4?.trim()) {
+    return res.status(400).json({ error: "Question and all 4 answers are required" });
+  }
+
+  if (!correct_answer || correct_answer < 1 || correct_answer > 4) {
+    return res.status(400).json({ error: "correct_answer must be between 1 and 4" });
+  }
+
+  // Check if stack exists and user has permission
+  const { rows: stackRows } = await db.execute(
+    "SELECT * FROM stacks WHERE id = ?",
+    [stackId]
+  );
+  const stack = stackRows[0];
+  if (!stack) return res.status(404).json({ error: "Stack not found" });
+
+  if (stack.user_id !== req.user.id) {
+    const { rows: collaboratorRows } = await db.execute(
+      "SELECT 1 FROM stack_collaborators WHERE stack_id = ? AND user_id = ?",
+      [stackId, req.user.id]
+    );
+    if (collaboratorRows.length === 0) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+  }
+
+  // Create question
+  const id = nanoid();
+  const now = new Date().toISOString();
+
+  await db.execute({
+    sql: `INSERT INTO questions (
+      id, stack_id, question, answer_1, answer_2, answer_3, answer_4, 
+      correct_answer, explanation, difficulty, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      id, stackId, question.trim(), answer_1.trim(), answer_2.trim(), 
+      answer_3.trim(), answer_4.trim(), correct_answer, 
+      explanation?.trim() || null, difficulty || null, now, now
+    ],
+  });
+
+  const { rows } = await db.execute("SELECT * FROM questions WHERE id = ?", [id]);
+  res.status(201).json(rows[0]);
+});
+
+// ========================================
+// PATCH: Update a Question
+// ========================================
+app.patch("/api/questions/:questionId", requireAuth, async (req, res) => {
+  const { questionId } = req.params;
+  const { question, answer_1, answer_2, answer_3, answer_4, correct_answer, explanation, difficulty } = req.body || {};
+
+  // Get question to check stack ownership
+  const { rows: questionRows } = await db.execute(
+    "SELECT stack_id FROM questions WHERE id = ?",
+    [questionId]
+  );
+  if (questionRows.length === 0) {
+    return res.status(404).json({ error: "Question not found" });
+  }
+
+  const stack_id = questionRows[0].stack_id;
+
+  // Check permission
+  const { rows: stackRows } = await db.execute(
+    "SELECT * FROM stacks WHERE id = ?",
+    [stack_id]
+  );
+  const stack = stackRows[0];
+  if (!stack) return res.status(404).json({ error: "Stack not found" });
+
+  if (stack.user_id !== req.user.id) {
+    const { rows: collaboratorRows } = await db.execute(
+      "SELECT 1 FROM stack_collaborators WHERE stack_id = ? AND user_id = ?",
+      [stack_id, req.user.id]
+    );
+    if (collaboratorRows.length === 0) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+  }
+
+  // Build update query
+  const updates = {};
+  if (question !== undefined) updates.question = question.trim();
+  if (answer_1 !== undefined) updates.answer_1 = answer_1.trim();
+  if (answer_2 !== undefined) updates.answer_2 = answer_2.trim();
+  if (answer_3 !== undefined) updates.answer_3 = answer_3.trim();
+  if (answer_4 !== undefined) updates.answer_4 = answer_4.trim();
+  if (correct_answer !== undefined) {
+    if (correct_answer < 1 || correct_answer > 4) {
+      return res.status(400).json({ error: "correct_answer must be between 1 and 4" });
+    }
+    updates.correct_answer = correct_answer;
+  }
+  if (explanation !== undefined) updates.explanation = explanation?.trim() || null;
+  if (difficulty !== undefined) updates.difficulty = difficulty || null;
+
+  if (Object.keys(updates).length === 0) {
+    const { rows } = await db.execute("SELECT * FROM questions WHERE id = ?", [questionId]);
+    return res.json(rows[0]);
+  }
+
+  const now = new Date().toISOString();
+  updates.updated_at = now;
+
+  const setClauses = Object.keys(updates).map((key) => `${key} = ?`);
+  const args = [...Object.values(updates), questionId];
+
+  await db.execute({
+    sql: `UPDATE questions SET ${setClauses.join(", ")} WHERE id = ?`,
+    args,
+  });
+
+  const { rows } = await db.execute("SELECT * FROM questions WHERE id = ?", [questionId]);
+  res.json(rows[0]);
+});
+
+// ========================================
+// DELETE: Delete a Question
+// ========================================
+app.delete("/api/questions/:questionId", requireAuth, async (req, res) => {
+  const { questionId } = req.params;
+
+  // Get question to check stack ownership
+  const { rows: questionRows } = await db.execute(
+    "SELECT stack_id FROM questions WHERE id = ?",
+    [questionId]
+  );
+  if (questionRows.length === 0) {
+    return res.status(404).json({ error: "Question not found" });
+  }
+
+  const stack_id = questionRows[0].stack_id;
+
+  // Check permission
+  const { rows: stackRows } = await db.execute(
+    "SELECT * FROM stacks WHERE id = ?",
+    [stack_id]
+  );
+  const stack = stackRows[0];
+  if (!stack) return res.status(404).json({ error: "Stack not found" });
+
+  if (stack.user_id !== req.user.id) {
+    const { rows: collaboratorRows } = await db.execute(
+      "SELECT 1 FROM stack_collaborators WHERE stack_id = ? AND user_id = ?",
+      [stack_id, req.user.id]
+    );
+    if (collaboratorRows.length === 0) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+  }
+
+  // Delete question (cascade will delete results)
+  await db.execute({
+    sql: "DELETE FROM questions WHERE id = ?",
+    args: [questionId],
+  });
+
+  res.status(204).end();
+});
+
+// ========================================
+// POST: Submit Question Answer & Record Result
+// ========================================
+app.post("/api/questions/:questionId/answer", requireAuth, async (req, res) => {
+  const { questionId } = req.params;
+  const { selected_answer, time_taken } = req.body || {};
+
+  if (!selected_answer || selected_answer < 1 || selected_answer > 4) {
+    return res.status(400).json({ error: "selected_answer must be between 1 and 4" });
+  }
+
+  // Get question
+  const { rows: questionRows } = await db.execute(
+    "SELECT * FROM questions WHERE id = ?",
+    [questionId]
+  );
+  if (questionRows.length === 0) {
+    return res.status(404).json({ error: "Question not found" });
+  }
+
+  const question = questionRows[0];
+  const is_correct = selected_answer === question.correct_answer ? 1 : 0;
+
+  // Record result
+  const id = nanoid();
+  const now = new Date().toISOString();
+
+  await db.execute({
+    sql: `INSERT INTO question_results (
+      id, question_id, stack_id, user_id, selected_answer, 
+      is_correct, time_taken, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      id, questionId, question.stack_id, req.user.id, 
+      selected_answer, is_correct, time_taken || null, now
+    ],
+  });
+
+  // Return result with correct answer info
+  res.json({
+    id,
+    is_correct: is_correct === 1,
+    correct_answer: question.correct_answer,
+    explanation: question.explanation,
+    selected_answer
+  });
+});
+
+// ========================================
+// GET: Question Statistics for a Stack
+// ========================================
+app.get("/api/stacks/:stackId/questions/statistics", optionalAuth, async (req, res) => {
+  const { stackId } = req.params;
+
+  // Check access
+  const { rows: stackRows } = await db.execute(
+    "SELECT * FROM stacks WHERE id = ?",
+    [stackId]
+  );
+  const stack = stackRows[0];
+  if (!stack) return res.status(404).json({ error: "Stack not found" });
+
+  if (!stack.is_public) {
+    if (!req.user) {
+      return res.status(403).json({ error: "Forbidden - Login required" });
+    }
+    if (stack.user_id !== req.user.id) {
+      const { rows: collaboratorRows } = await db.execute(
+        "SELECT 1 FROM stack_collaborators WHERE stack_id = ? AND user_id = ?",
+        [stackId, req.user.id]
+      );
+      if (collaboratorRows.length === 0) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+    }
+  }
+
+  // Overall statistics
+  const { rows: overallStats } = await db.execute({
+    sql: `
+      SELECT 
+        COUNT(DISTINCT q.id) as total_questions,
+        COUNT(qr.id) as total_attempts,
+        SUM(CASE WHEN qr.is_correct = 1 THEN 1 ELSE 0 END) as correct_answers,
+        AVG(CASE WHEN qr.time_taken IS NOT NULL THEN qr.time_taken END) as avg_time_taken
+      FROM questions q
+      LEFT JOIN question_results qr ON q.id = qr.question_id
+      WHERE q.stack_id = ?
+    `,
+    args: [stackId],
+  });
+
+  // User-specific stats (if logged in)
+  let userStats = null;
+  if (req.user) {
+    const { rows: userStatsRows } = await db.execute({
+      sql: `
+        SELECT 
+          COUNT(DISTINCT question_id) as attempted_questions,
+          COUNT(*) as total_attempts,
+          SUM(CASE WHEN is_correct = 1 THEN 1 ELSE 0 END) as correct_answers,
+          AVG(CASE WHEN time_taken IS NOT NULL THEN time_taken END) as avg_time_taken
+        FROM question_results
+        WHERE stack_id = ? AND user_id = ?
+      `,
+      args: [stackId, req.user.id],
+    });
+    userStats = userStatsRows[0];
+  }
+
+  // Most difficult questions (lowest correct rate)
+  const { rows: difficultQuestions } = await db.execute({
+    sql: `
+      SELECT 
+        q.id,
+        q.question,
+        COUNT(qr.id) as attempt_count,
+        SUM(CASE WHEN qr.is_correct = 1 THEN 1 ELSE 0 END) as correct_count,
+        ROUND(AVG(qr.is_correct) * 100, 2) as correct_percentage
+      FROM questions q
+      LEFT JOIN question_results qr ON q.id = qr.question_id
+      WHERE q.stack_id = ?
+      GROUP BY q.id
+      HAVING attempt_count > 0
+      ORDER BY correct_percentage ASC, attempt_count DESC
+      LIMIT 5
+    `,
+    args: [stackId],
+  });
+
+  res.json({
+    overall: overallStats[0],
+    user: userStats,
+    difficult_questions: difficultQuestions
+  });
+});
+
+// ========================================
+// POST: Bulk Import Questions from CSV
+// ========================================
+app.post("/api/stacks/:stackId/questions/import", requireAuth, async (req, res) => {
+  const { stackId } = req.params;
+  const { questions } = req.body || {};
+
+  if (!Array.isArray(questions) || questions.length === 0) {
+    return res.status(400).json({ error: "questions array is required" });
+  }
+
+  // Check permission
+  const { rows: stackRows } = await db.execute(
+    "SELECT * FROM stacks WHERE id = ?",
+    [stackId]
+  );
+  const stack = stackRows[0];
+  if (!stack) return res.status(404).json({ error: "Stack not found" });
+
+  if (stack.user_id !== req.user.id) {
+    const { rows: collaboratorRows } = await db.execute(
+      "SELECT 1 FROM stack_collaborators WHERE stack_id = ? AND user_id = ?",
+      [stackId, req.user.id]
+    );
+    if (collaboratorRows.length === 0) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+  }
+
+  const now = new Date().toISOString();
+  const imported = [];
+  const errors = [];
+
+  // Import each question
+  for (let i = 0; i < questions.length; i++) {
+    const q = questions[i];
+    
+    try {
+      // Validate
+      if (!q.question?.trim() || !q.answer_1?.trim() || !q.answer_2?.trim() || 
+          !q.answer_3?.trim() || !q.answer_4?.trim()) {
+        errors.push({ index: i, error: "Missing required fields" });
+        continue;
+      }
+
+      if (!q.correct_answer || q.correct_answer < 1 || q.correct_answer > 4) {
+        errors.push({ index: i, error: "correct_answer must be between 1 and 4" });
+        continue;
+      }
+
+      const id = nanoid();
+      
+      await db.execute({
+        sql: `INSERT INTO questions (
+          id, stack_id, question, answer_1, answer_2, answer_3, answer_4, 
+          correct_answer, explanation, difficulty, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          id, stackId, q.question.trim(), q.answer_1.trim(), q.answer_2.trim(), 
+          q.answer_3.trim(), q.answer_4.trim(), q.correct_answer, 
+          q.explanation?.trim() || null, q.difficulty || null, now, now
+        ],
+      });
+
+      imported.push({ index: i, id });
+    } catch (err) {
+      errors.push({ index: i, error: err.message });
+    }
+  }
+
+  res.json({
+    success: true,
+    imported: imported.length,
+    errors: errors.length,
+    details: { imported, errors }
+  });
+});
+
+
+// ========================================
 // MIDDLEWARE INTEGRATION
 // Füge diese Zeile NACH app.use(express.json()) 
 // und NACH der optionalAuth Middleware ein:
