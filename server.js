@@ -19,6 +19,9 @@ app.use(
 );
 
 app.use(express.json());
+// Default is 100kb, we need at least 10mb for images
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 /* ========== AUTH ========== */
 app.post("/api/login", async (req, res) => {
