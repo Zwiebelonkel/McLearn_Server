@@ -2374,6 +2374,86 @@ app.post("/api/stacks/:stackId/questions/import", requireAuth, async (req, res) 
   });
 });
 
+/* ========== SCRIBBLEPAD (with image support) ========== */
+
+app.get("/api/scribblepad", requireAuth, async (req, res) => {
+  const userId = req.user.id;
+
+  try {
+    const { rows } = await db.execute({
+      sql: "SELECT * FROM scribblepad WHERE user_id = ?",
+      args: [userId],
+    });
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "ScribblePad not found" });
+    }
+
+    res.json(rows[0]);
+  } catch (err) {
+    console.error("Error fetching scribblepad:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+app.post("/api/scribblepad", requireAuth, async (req, res) => {
+  const userId = req.user.id;
+  const { content, image } = req.body;
+
+  if (typeof content !== "string") {
+    return res.status(400).json({ error: "Content must be a string" });
+  }
+
+  // Optional: Validate image if provided
+  if (image !== null && image !== undefined && typeof image !== "string") {
+    return res.status(400).json({ error: "Image must be a string (base64) or null" });
+  }
+
+  // Optional: Validate base64 format and size (example: 5MB limit)
+  if (image && image.length > 7000000) { // ~5MB in base64
+    return res.status(400).json({ error: "Image size too large (max 5MB)" });
+  }
+
+  try {
+    const now = new Date().toISOString();
+
+    const { rows: existing } = await db.execute({
+      sql: "SELECT * FROM scribblepad WHERE user_id = ?",
+      args: [userId],
+    });
+
+    if (existing.length > 0) {
+      await db.execute({
+        sql: "UPDATE scribblepad SET content = ?, image = ?, updated_at = ? WHERE user_id = ?",
+        args: [content, image || null, now, userId],
+      });
+
+      const { rows: updated } = await db.execute({
+        sql: "SELECT * FROM scribblepad WHERE user_id = ?",
+        args: [userId],
+      });
+
+      res.json(updated[0]);
+    } else {
+      const id = nanoid();
+      await db.execute({
+        sql: `INSERT INTO scribblepad (id, user_id, content, image, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?)`,
+        args: [id, userId, content, image || null, now, now],
+      });
+
+      const { rows: created } = await db.execute({
+        sql: "SELECT * FROM scribblepad WHERE id = ?",
+        args: [id],
+      });
+
+      res.status(201).json(created[0]);
+    }
+  } catch (err) {
+    console.error("Error saving scribblepad:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
 
 // ========================================
 // MIDDLEWARE INTEGRATION
