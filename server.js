@@ -2377,7 +2377,7 @@ app.post("/api/stacks/:stackId/questions/import", requireAuth, async (req, res) 
   });
 });
 
-/* ========== SCRIBBLEPAD (CORRECTED VERSION) ========== */
+/* ========== SCRIBBLEPAD - FINAL FIX ========== */
 
 app.get("/api/scribblepad", requireAuth, async (req, res) => {
   const userId = req.user.id;
@@ -2392,7 +2392,11 @@ app.get("/api/scribblepad", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "ScribblePad not found" });
     }
 
-    res.json(rows[0]);
+    // Ensure content is never null
+    const pad = rows[0];
+    pad.content = pad.content || '';
+    
+    res.json(pad);
   } catch (err) {
     console.error("Error fetching scribblepad:", err);
     res.status(500).json({ error: "Server error" });
@@ -2401,83 +2405,104 @@ app.get("/api/scribblepad", requireAuth, async (req, res) => {
 
 app.post("/api/scribblepad", requireAuth, async (req, res) => {
   const userId = req.user.id;
-  const { content, image } = req.body;
+  let { content, image } = req.body;
+
+  // WICHTIG: Ensure content is always a string, never null/undefined
+  content = (content !== null && content !== undefined) ? String(content) : '';
+  
+  // WICHTIG: Ensure image is either string or null
+  image = (image !== null && image !== undefined && image !== '') ? String(image) : null;
 
   console.log('📝 ScribblePad Save Request:', {
     userId,
-    contentLength: content?.length,
+    contentType: typeof content,
+    contentLength: content.length,
+    contentPreview: content.substring(0, 50) + '...',
+    imageType: typeof image,
     hasImage: !!image,
-    imageLength: image?.length
+    imageLength: image?.length || 0
   });
 
-  // Validate content
-  if (typeof content !== "string") {
-    console.error('❌ Invalid content type:', typeof content);
-    return res.status(400).json({ error: "Content must be a string" });
-  }
-
-  // Validate image (optional)
-  if (image !== null && image !== undefined && typeof image !== "string") {
-    console.error('❌ Invalid image type:', typeof image);
-    return res.status(400).json({ error: "Image must be a string (base64) or null" });
-  }
-
-  // Validate base64 format if image provided
-  if (image && image.length > 7000000) { // ~5MB in base64
+  // Validate image size
+  if (image && image.length > 7000000) {
     console.error('❌ Image too large:', image.length);
     return res.status(400).json({ error: "Image size too large (max 5MB)" });
   }
 
   try {
     const now = new Date().toISOString();
-    const imageValue = image || null;
 
-    // Check if scribblepad exists
+    // Check if scribblepad exists for this user
     const { rows: existing } = await db.execute({
-      sql: "SELECT * FROM scribblepad WHERE user_id = ?",
+      sql: "SELECT id FROM scribblepad WHERE user_id = ?",
       args: [userId],
     });
 
     if (existing.length > 0) {
       // UPDATE existing scribblepad
-      console.log('🔄 Updating existing scribblepad for user:', userId);
+      console.log('🔄 Updating scribblepad for user:', userId);
       
-      await db.execute({
+      const result = await db.execute({
         sql: "UPDATE scribblepad SET content = ?, image = ?, updated_at = ? WHERE user_id = ?",
-        args: [content, imageValue, now, userId],
+        args: [content, image, now, userId],
       });
 
-      // Fetch updated record
+      console.log('Update result:', result);
+
+      // Fetch updated record to verify
       const { rows: updated } = await db.execute({
         sql: "SELECT * FROM scribblepad WHERE user_id = ?",
         args: [userId],
       });
 
-      console.log('✅ ScribblePad updated successfully');
-      res.json(updated[0]);
+      const savedPad = updated[0];
+      console.log('✅ ScribblePad updated:', {
+        id: savedPad.id,
+        contentLength: savedPad.content?.length || 0,
+        hasImage: !!savedPad.image
+      });
+
+      // Ensure content is never null in response
+      savedPad.content = savedPad.content || '';
+      
+      res.json(savedPad);
       
     } else {
       // INSERT new scribblepad
       console.log('➕ Creating new scribblepad for user:', userId);
       
       const id = nanoid();
-      await db.execute({
+      
+      const result = await db.execute({
         sql: `INSERT INTO scribblepad (id, user_id, content, image, created_at, updated_at)
               VALUES (?, ?, ?, ?, ?, ?)`,
-        args: [id, userId, content, imageValue, now, now],
+        args: [id, userId, content, image, now, now],
       });
 
-      // Fetch created record
+      console.log('Insert result:', result);
+
+      // Fetch created record to verify
       const { rows: created } = await db.execute({
         sql: "SELECT * FROM scribblepad WHERE id = ?",
         args: [id],
       });
 
-      console.log('✅ ScribblePad created successfully');
-      res.status(201).json(created[0]);
+      const savedPad = created[0];
+      console.log('✅ ScribblePad created:', {
+        id: savedPad.id,
+        contentLength: savedPad.content?.length || 0,
+        hasImage: !!savedPad.image
+      });
+
+      // Ensure content is never null in response
+      savedPad.content = savedPad.content || '';
+      
+      res.status(201).json(savedPad);
     }
   } catch (err) {
     console.error("❌ Error saving scribblepad:", err);
+    console.error("Error details:", err.message);
+    console.error("Stack trace:", err.stack);
     res.status(500).json({ error: "Server error: " + err.message });
   }
 });
