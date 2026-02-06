@@ -2507,6 +2507,130 @@ app.post("/api/scribblepad", requireAuth, async (req, res) => {
   }
 });
 
+/* ========== DEBUG: Check ScribblePad in Database ========== */
+// Füge das temporär zu deinem server.js hinzu
+
+app.get("/api/debug/scribblepad-raw", requireAuth, async (req, res) => {
+  const userId = req.user.id;
+  
+  try {
+    // Get raw data from database
+    const { rows } = await db.execute({
+      sql: `SELECT 
+              id,
+              user_id,
+              CASE 
+                WHEN content IS NULL THEN 'IS_NULL'
+                WHEN content = '' THEN 'EMPTY_STRING'
+                ELSE substr(content, 1, 100) || '...'
+              END as content_preview,
+              length(content) as content_length,
+              CASE 
+                WHEN image IS NULL THEN 'IS_NULL'
+                WHEN image = '' THEN 'EMPTY_STRING'
+                ELSE 'HAS_DATA'
+              END as image_status,
+              length(image) as image_length,
+              substr(image, 1, 50) as image_preview,
+              created_at,
+              updated_at
+            FROM scribblepad 
+            WHERE user_id = ?`,
+      args: [userId]
+    });
+
+    if (rows.length === 0) {
+      return res.json({
+        found: false,
+        message: 'No ScribblePad entry exists for this user',
+        userId
+      });
+    }
+
+    res.json({
+      found: true,
+      data: rows[0],
+      userId
+    });
+
+  } catch (err) {
+    res.status(500).json({
+      error: err.message,
+      stack: err.stack
+    });
+  }
+});
+
+// Manual insert test
+app.post("/api/debug/scribblepad-manual-insert", requireAuth, async (req, res) => {
+  const userId = req.user.id;
+  const { content, image } = req.body;
+
+  console.log('🧪 Manual insert test:', {
+    userId,
+    contentProvided: !!content,
+    contentType: typeof content,
+    contentValue: content,
+    imageProvided: !!image,
+    imageType: typeof image,
+    imageLength: image?.length
+  });
+
+  try {
+    const now = new Date().toISOString();
+    
+    // Delete existing
+    await db.execute({
+      sql: 'DELETE FROM scribblepad WHERE user_id = ?',
+      args: [userId]
+    });
+
+    console.log('Deleted existing entry');
+
+    // Insert new
+    const id = nanoid();
+    const contentValue = content !== null && content !== undefined ? String(content) : '';
+    const imageValue = image && image !== '' ? String(image) : null;
+
+    console.log('Inserting with values:', {
+      id,
+      userId,
+      content: contentValue.substring(0, 50) + '...',
+      contentLength: contentValue.length,
+      image: imageValue ? 'HAS_IMAGE' : 'NULL',
+      imageLength: imageValue?.length
+    });
+
+    await db.execute({
+      sql: `INSERT INTO scribblepad (id, user_id, content, image, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)`,
+      args: [id, userId, contentValue, imageValue, now, now]
+    });
+
+    console.log('Insert completed');
+
+    // Verify
+    const { rows: verify } = await db.execute({
+      sql: 'SELECT * FROM scribblepad WHERE id = ?',
+      args: [id]
+    });
+
+    console.log('Verification:', verify[0]);
+
+    res.json({
+      success: true,
+      inserted: verify[0]
+    });
+
+  } catch (err) {
+    console.error('Manual insert failed:', err);
+    res.status(500).json({
+      error: err.message,
+      stack: err.stack
+    });
+  }
+});
+
 // ========================================
 // MIDDLEWARE INTEGRATION
 // Füge diese Zeile NACH app.use(express.json()) 
