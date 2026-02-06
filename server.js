@@ -2507,127 +2507,153 @@ app.post("/api/scribblepad", requireAuth, async (req, res) => {
   }
 });
 
-/* ========== DEBUG: Check ScribblePad in Database ========== */
-// Füge das temporär zu deinem server.js hinzu
+/* ========== SCRIBBLEPAD - ULTRA DEBUG VERSION ========== */
 
-app.get("/api/debug/scribblepad-raw", requireAuth, async (req, res) => {
+app.post("/api/scribblepad", requireAuth, async (req, res) => {
   const userId = req.user.id;
+  let { content, image } = req.body;
+
+  console.log('=====================================');
+  console.log('📝 SCRIBBLEPAD SAVE REQUEST');
+  console.log('=====================================');
+  console.log('User ID:', userId);
+  console.log('Raw body keys:', Object.keys(req.body));
+  console.log('Content type:', typeof content);
+  console.log('Content value:', content?.substring(0, 50));
+  console.log('Content length:', content?.length);
+  console.log('Image type:', typeof image);
+  console.log('Image is null?', image === null);
+  console.log('Image is undefined?', image === undefined);
+  console.log('Image length:', image?.length);
+  console.log('Image preview:', image?.substring(0, 100));
+
+  // Ensure content is always a string
+  content = (content !== null && content !== undefined) ? String(content) : '';
   
-  try {
-    // Get raw data from database
-    const { rows } = await db.execute({
-      sql: `SELECT 
-              id,
-              user_id,
-              CASE 
-                WHEN content IS NULL THEN 'IS_NULL'
-                WHEN content = '' THEN 'EMPTY_STRING'
-                ELSE substr(content, 1, 100) || '...'
-              END as content_preview,
-              length(content) as content_length,
-              CASE 
-                WHEN image IS NULL THEN 'IS_NULL'
-                WHEN image = '' THEN 'EMPTY_STRING'
-                ELSE 'HAS_DATA'
-              END as image_status,
-              length(image) as image_length,
-              substr(image, 1, 50) as image_preview,
-              created_at,
-              updated_at
-            FROM scribblepad 
-            WHERE user_id = ?`,
-      args: [userId]
-    });
+  // Ensure image is either string or null
+  image = (image !== null && image !== undefined && image !== '') ? String(image) : null;
 
-    if (rows.length === 0) {
-      return res.json({
-        found: false,
-        message: 'No ScribblePad entry exists for this user',
-        userId
-      });
-    }
+  console.log('---AFTER PROCESSING---');
+  console.log('Content (processed):', content.substring(0, 50));
+  console.log('Image (processed):', image ? `STRING with ${image.length} chars` : 'NULL');
 
-    res.json({
-      found: true,
-      data: rows[0],
-      userId
-    });
-
-  } catch (err) {
-    res.status(500).json({
-      error: err.message,
-      stack: err.stack
-    });
+  if (image && image.length > 7000000) {
+    console.error('❌ Image too large:', image.length);
+    return res.status(400).json({ error: "Image size too large (max 5MB)" });
   }
-});
-
-// Manual insert test
-app.post("/api/debug/scribblepad-manual-insert", requireAuth, async (req, res) => {
-  const userId = req.user.id;
-  const { content, image } = req.body;
-
-  console.log('🧪 Manual insert test:', {
-    userId,
-    contentProvided: !!content,
-    contentType: typeof content,
-    contentValue: content,
-    imageProvided: !!image,
-    imageType: typeof image,
-    imageLength: image?.length
-  });
 
   try {
     const now = new Date().toISOString();
-    
-    // Delete existing
-    await db.execute({
-      sql: 'DELETE FROM scribblepad WHERE user_id = ?',
-      args: [userId]
+
+    // Check if scribblepad exists
+    const { rows: existing } = await db.execute({
+      sql: "SELECT id FROM scribblepad WHERE user_id = ?",
+      args: [userId],
     });
 
-    console.log('Deleted existing entry');
+    console.log('Existing entries found:', existing.length);
 
-    // Insert new
-    const id = nanoid();
-    const contentValue = content !== null && content !== undefined ? String(content) : '';
-    const imageValue = image && image !== '' ? String(image) : null;
+    if (existing.length > 0) {
+      // UPDATE
+      console.log('🔄 UPDATING existing scribblepad');
+      console.log('SQL:', "UPDATE scribblepad SET content = ?, image = ?, updated_at = ? WHERE user_id = ?");
+      console.log('Args:', [
+        `content: "${content.substring(0, 30)}..." (${content.length} chars)`,
+        `image: ${image ? `STRING (${image.length} chars)` : 'NULL'}`,
+        now,
+        userId
+      ]);
 
-    console.log('Inserting with values:', {
-      id,
-      userId,
-      content: contentValue.substring(0, 50) + '...',
-      contentLength: contentValue.length,
-      image: imageValue ? 'HAS_IMAGE' : 'NULL',
-      imageLength: imageValue?.length
-    });
+      const updateResult = await db.execute({
+        sql: "UPDATE scribblepad SET content = ?, image = ?, updated_at = ? WHERE user_id = ?",
+        args: [content, image, now, userId],
+      });
 
-    await db.execute({
-      sql: `INSERT INTO scribblepad (id, user_id, content, image, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)`,
-      args: [id, userId, contentValue, imageValue, now, now]
-    });
+      console.log('Update result:', updateResult);
 
-    console.log('Insert completed');
+      // VERIFY immediately after update
+      const { rows: verify } = await db.execute({
+        sql: "SELECT id, length(content) as content_len, length(image) as image_len, CASE WHEN image IS NULL THEN 'NULL' ELSE 'HAS_DATA' END as image_status FROM scribblepad WHERE user_id = ?",
+        args: [userId],
+      });
 
-    // Verify
-    const { rows: verify } = await db.execute({
-      sql: 'SELECT * FROM scribblepad WHERE id = ?',
-      args: [id]
-    });
+      console.log('🔍 VERIFICATION after UPDATE:', verify[0]);
 
-    console.log('Verification:', verify[0]);
+      // Fetch full record
+      const { rows: updated } = await db.execute({
+        sql: "SELECT * FROM scribblepad WHERE user_id = ?",
+        args: [userId],
+      });
 
-    res.json({
-      success: true,
-      inserted: verify[0]
-    });
+      const savedPad = updated[0];
+      console.log('✅ Response data:', {
+        id: savedPad.id,
+        content_length: savedPad.content?.length || 0,
+        image_length: savedPad.image?.length || 0,
+        has_image: !!savedPad.image
+      });
 
+      savedPad.content = savedPad.content || '';
+      
+      console.log('=====================================');
+      res.json(savedPad);
+      
+    } else {
+      // INSERT
+      console.log('➕ INSERTING new scribblepad');
+      
+      const id = nanoid();
+      console.log('SQL:', "INSERT INTO scribblepad (id, user_id, content, image, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)");
+      console.log('Args:', [
+        id,
+        userId,
+        `content: "${content.substring(0, 30)}..." (${content.length} chars)`,
+        `image: ${image ? `STRING (${image.length} chars)` : 'NULL'}`,
+        now,
+        now
+      ]);
+
+      const insertResult = await db.execute({
+        sql: `INSERT INTO scribblepad (id, user_id, content, image, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?)`,
+        args: [id, userId, content, image, now, now],
+      });
+
+      console.log('Insert result:', insertResult);
+
+      // VERIFY immediately after insert
+      const { rows: verify } = await db.execute({
+        sql: "SELECT id, length(content) as content_len, length(image) as image_len, CASE WHEN image IS NULL THEN 'NULL' ELSE 'HAS_DATA' END as image_status FROM scribblepad WHERE id = ?",
+        args: [id],
+      });
+
+      console.log('🔍 VERIFICATION after INSERT:', verify[0]);
+
+      // Fetch full record
+      const { rows: created } = await db.execute({
+        sql: "SELECT * FROM scribblepad WHERE id = ?",
+        args: [id],
+      });
+
+      const savedPad = created[0];
+      console.log('✅ Response data:', {
+        id: savedPad.id,
+        content_length: savedPad.content?.length || 0,
+        image_length: savedPad.image?.length || 0,
+        has_image: !!savedPad.image
+      });
+
+      savedPad.content = savedPad.content || '';
+      
+      console.log('=====================================');
+      res.status(201).json(savedPad);
+    }
   } catch (err) {
-    console.error('Manual insert failed:', err);
-    res.status(500).json({
-      error: err.message,
-      stack: err.stack
-    });
+    console.error("❌ ERROR saving scribblepad:");
+    console.error("Message:", err.message);
+    console.error("Stack:", err.stack);
+    console.log('=====================================');
+    res.status(500).json({ error: "Server error: " + err.message });
   }
 });
 
