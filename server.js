@@ -498,11 +498,16 @@ app.patch("/api/stacks/:id", requireAuth, async (req, res) => {
 // Stack löschen
 app.delete("/api/stacks/:id", requireAuth, async (req, res) => {
   const { id } = req.params;
-  await db.execute({
-    sql: `DELETE FROM stacks WHERE id=? AND user_id=?`,
-    args: [id, req.user.id],
-  });
-  res.status(204).end();
+  try {
+    await db.execute({
+      sql: `DELETE FROM stacks WHERE id=? AND user_id=?`,
+      args: [id, req.user.id],
+    });
+    res.status(204).end();
+  } catch (err) {
+    console.error("Error deleting stack:", err);
+    res.status(500).json({ error: "Failed to delete stack: " + err.message });
+  }
 });
 
 /* ========== COLLABORATORS ========== */
@@ -1580,14 +1585,16 @@ app.delete("/api/admin/users/:userId", requireAuth, requireAdmin, async (req, re
 // Delete stack (admin only)
 app.delete("/api/admin/stacks/:stackId", requireAuth, requireAdmin, async (req, res) => {
   const { stackId } = req.params;
-
-  // Delete stack (cascade will handle cards)
-  await db.execute({
-    sql: "DELETE FROM stacks WHERE id = ?",
-    args: [stackId],
-  });
-
-  res.status(204).end();
+  try {
+    await db.execute({
+      sql: "DELETE FROM stacks WHERE id = ?",
+      args: [stackId],
+    });
+    res.status(204).end();
+  } catch (err) {
+    console.error("Error deleting stack (admin):", err);
+    res.status(500).json({ error: "Failed to delete stack: " + err.message });
+  }
 });
 
 // Update stack visibility (admin only)
