@@ -50,6 +50,11 @@ app.post("/api/login", async (req, res) => {
   }
 });
 
+// Einfacher Test-Endpunkt
+app.get('/api/test', (req, res) => {
+  res.status(200).send('ok');
+});
+
 app.post("/api/register", async (req, res) => {
   const { username, password } = req.body;
   try {
